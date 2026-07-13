@@ -1,0 +1,13 @@
+# node_modules is intentionally NOT ignored — committed on purpose so the
+# Windows install works with zero internet access at setup time (git clone
+# is the only network dependency). Every dependency here is pure JS, no
+# native/compiled binaries, so this is safe across platforms. Verify that
+# stays true (find node_modules -name "*.node") before adding a new dependency.
+
+.env
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/snapshots/
+data/app.log*
+.gitnexus

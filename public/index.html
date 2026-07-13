@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Access Log — Face Terminal</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <div class="brand">
+        <span class="dot" id="liveDot"></span>
+        <h1>Access Log</h1>
+      </div>
+      <span class="subtitle" id="deviceSubtitle">DS-K1T343EWX</span>
+    </header>
+
+    <div class="controls">
+      <input type="date" id="dateFilter" />
+      <button id="todayBtn">Today</button>
+      <span id="status"></span>
+    </div>
+
+    <div class="feed" id="rows"></div>
+    <div class="empty" id="emptyMsg" hidden>No check-ins for this day yet.</div>
+
+    <section class="panel">
+      <h2>Add worker</h2>
+      <p class="panel-hint">Have each new worker stand in front of the terminal and hit capture — do this for everyone first, then come back and put in names.</p>
+      <button id="captureBtn" class="primary">Capture new face</button>
+      <div class="enroll-msg" id="captureMsg"></div>
+      <div class="pending-grid" id="pendingGrid"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Settings</h2>
+
+      <div class="settings-row">
+        <label for="deviceIpInput">Terminal IP</label>
+        <input type="text" id="deviceIpInput" placeholder="10.10.11.184" />
+        <button id="saveIpBtn">Save</button>
+        <span id="ipMode" class="ip-mode"></span>
+      </div>
+      <div class="enroll-msg" id="ipMsg"></div>
+
+      <div class="settings-row">
+        <button id="clearHistoryBtn" class="danger">Clear check-in history</button>
+        <button id="clearLogBtn">Clear log</button>
+        <button id="viewLogBtn">View log</button>
+      </div>
+      <div class="enroll-msg" id="settingsMsg"></div>
+      <pre id="logView" hidden></pre>
+    </section>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

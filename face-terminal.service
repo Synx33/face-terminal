@@ -1,0 +1,31 @@
+[Unit]
+Description=face-terminal attendance receiver (DS-K1T343EWX)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zura
+WorkingDirectory=/home/zura/projects/face-terminal
+EnvironmentFile=/home/zura/projects/face-terminal/.env
+ExecStart=/usr/bin/node --env-file=/home/zura/projects/face-terminal/.env src/server.js
+Restart=on-failure
+RestartSec=3
+# The app manages its own log file (data/app.log), clearable from the
+# dashboard without root — stdout/stderr still go to the journal too
+# (journalctl -u face-terminal) as a fallback, no separate file needed.
+StandardOutput=journal
+StandardError=journal
+
+# Sandboxing — limit blast radius if the process gets compromised
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/home/zura/projects/face-terminal
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
