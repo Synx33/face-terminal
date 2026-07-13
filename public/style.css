@@ -368,6 +368,15 @@ button.danger:hover { border-color: var(--danger); color: var(--danger); }
 
 /* --- photo lightbox --------------------------------------------------------- */
 
+/* The bug that mattered here: `.lightbox { display: flex }` below has the
+   same specificity as the browser's built-in `[hidden] { display: none }`,
+   and author CSS always wins that tie regardless of source order — so the
+   element stayed `display: flex` even while `hidden`, sitting invisible
+   (opacity: 0) but fully present over the entire page, swallowing every
+   click on the dashboard. This rule's higher specificity (class + attribute)
+   is what actually fixes it. */
+.lightbox[hidden] { display: none; }
+
 .lightbox {
   position: fixed;
   inset: 0;
