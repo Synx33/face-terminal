@@ -286,6 +286,45 @@ document.getElementById('viewLogBtn').addEventListener('click', () => {
   viewLog();
 });
 
+// --- photo lightbox -----------------------------------------------------------
+
+const lightbox = document.getElementById('lightbox');
+const lightboxImg = document.getElementById('lightboxImg');
+const LIGHTBOX_TRANSITION_MS = 220;
+
+function openLightbox(src) {
+  lightboxImg.src = src;
+  lightbox.hidden = false;
+  // Force layout with `hidden` removed but pre-transition, then add the
+  // class on the next frame so the CSS transition actually plays instead
+  // of snapping straight to the open state.
+  requestAnimationFrame(() => requestAnimationFrame(() => lightbox.classList.add('open')));
+}
+
+function closeLightbox() {
+  lightbox.classList.remove('open');
+  setTimeout(() => {
+    lightbox.hidden = true;
+    lightboxImg.src = '';
+  }, LIGHTBOX_TRANSITION_MS);
+}
+
+// Delegated click handling — rows/cards get created and replaced
+// dynamically, so listen on the containers rather than each image.
+for (const container of [rowsEl, pendingGrid]) {
+  container.addEventListener('click', (e) => {
+    const img = e.target.closest('.avatar img, .pending-card .thumb');
+    if (img) openLightbox(img.src);
+  });
+}
+
+lightbox.addEventListener('click', closeLightbox);
+lightboxImg.addEventListener('click', (e) => e.stopPropagation()); // clicking the photo itself shouldn't close it
+document.getElementById('lightboxClose').addEventListener('click', closeLightbox);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !lightbox.hidden) closeLightbox();
+});
+
 load();
 loadPending();
 loadDeviceInfo();
