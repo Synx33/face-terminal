@@ -15,15 +15,49 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-function Assert-Admin {
+function Test-Admin {
     $current = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]$current
-    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        throw "Run from an elevated PowerShell."
-    }
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-Assert-Admin
+# Same self-elevation as install.ps1 — see the comment there for why the
+# arguments have to be manually quoted like this (-Verb RunAs uses
+# ShellExecute, which takes one flat command line, not an argv array).
+function Assert-Admin-OrElevate {
+    param([hashtable] $BoundParams)
+    if (Test-Admin) { return }
+
+    Write-Host "==> not running elevated — relaunching as Administrator (a Windows UAC prompt will appear)"
+    $argList = @("-NoExit", "-ExecutionPolicy", "Bypass", "-File", "`"$PSCommandPath`"")
+    foreach ($key in $BoundParams.Keys) {
+        $value = $BoundParams[$key]
+        # $PSBoundParameters only contains keys actually passed on the
+        # command line — a [switch] like -Purge shows up here as a
+        # SwitchParameter($true) only when it was given, never as $false,
+        # so re-adding just the flag name (no value token) reproduces it
+        # correctly; anything else is a normal "-Name value" pair.
+        if ($value -is [System.Management.Automation.SwitchParameter]) {
+            $argList += "-$key"
+            continue
+        }
+        if ($value -is [string] -and $value.Contains('"')) {
+            throw "The value for -$key contains a double-quote character, which this script can't safely pass through to an elevated relaunch. Run it from an already-elevated PowerShell instead."
+        }
+        $argList += "-$key"
+        $argList += "`"$value`""
+    }
+
+    try {
+        Start-Process -FilePath "powershell.exe" -ArgumentList $argList -Verb RunAs | Out-Null
+    } catch {
+        throw "Elevation was cancelled or failed ($($_.Exception.Message)). Run this script from an already-elevated PowerShell instead."
+    }
+    Write-Host "==> continuing in the elevated window that just opened — this one can be closed"
+    exit 0
+}
+
+Assert-Admin-OrElevate -BoundParams $PSBoundParameters
 
 $nssmExe = Join-Path $InstallPath "nssm.exe"
 $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue

@@ -39,12 +39,52 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-function Assert-Admin {
+function Test-Admin {
     $current = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]$current
-    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        throw "This installer must run from an elevated PowerShell (Run as Administrator)."
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+# Registering a Windows service, opening a firewall port, and writing to
+# C:\Program Files all require admin rights. Rather than just erroring out
+# and telling whoever's running this to go reopen PowerShell as admin
+# themselves, re-launch this exact script (same parameters) in a new,
+# elevated PowerShell — Windows pops the standard UAC "Do you want to allow
+# this app to make changes" prompt, they click Yes, and installation
+# continues there. This process then exits since the elevated copy is doing
+# the real work.
+# $BoundParams must be passed in explicitly as the script's own
+# $PSBoundParameters — a function has its own (separate, and here empty)
+# $PSBoundParameters scope, it does not inherit the caller's automatically.
+function Assert-Admin-OrElevate {
+    param([hashtable] $BoundParams)
+    if (Test-Admin) { return }
+
+    Write-Host "==> not running elevated — relaunching as Administrator (a Windows UAC prompt will appear)"
+    $scriptPath = $PSCommandPath
+
+    $argList = @("-NoExit", "-ExecutionPolicy", "Bypass", "-File", "`"$scriptPath`"")
+    foreach ($key in $BoundParams.Keys) {
+        $value = $BoundParams[$key]
+        # -Verb RunAs launches via ShellExecute, which takes one flat command
+        # line (not an argv array) — Start-Process just space-joins whatever
+        # we hand it, so each value needs its own quotes here, and a literal
+        # " inside a value (e.g. a device password) would break that quoting
+        # silently. Fail loudly instead of mis-parsing the relaunch.
+        if ($value -is [string] -and $value.Contains('"')) {
+            throw "The value for -$key contains a double-quote character, which this installer can't safely pass through to an elevated relaunch. Remove it, or run this script from an already-elevated PowerShell instead."
+        }
+        $argList += "-$key"
+        $argList += "`"$value`""
     }
+
+    try {
+        Start-Process -FilePath "powershell.exe" -ArgumentList $argList -Verb RunAs | Out-Null
+    } catch {
+        throw "Elevation was cancelled or failed ($($_.Exception.Message)). This installer needs Administrator rights to register a Windows service and open a firewall port — run it again and accept the UAC prompt, or open PowerShell as Administrator yourself first."
+    }
+    Write-Host "==> continuing in the elevated window that just opened — this one can be closed"
+    exit 0
 }
 
 # Runs a node:sqlite smoke test and reports success/failure purely via exit
@@ -297,7 +337,7 @@ function Print-Summary {
 }
 
 # ---- main -----------------------------------------------------------------
-Assert-Admin
+Assert-Admin-OrElevate -BoundParams $PSBoundParameters
 $node = Assert-Node
 Copy-Source -Dest $InstallPath
 Install-Dependencies -InstallPath $InstallPath
