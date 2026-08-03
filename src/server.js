@@ -10,7 +10,7 @@ const { startPolling } = require('./poller');
 const { SNAPSHOT_DIR, saveSnapshot, savePendingSnapshot, deleteSnapshot } = require('./snapshots');
 const { resolveDeviceIp, forceRediscover } = require('./resolveDevice');
 const { getDeviceIp, hasDeviceIp } = require('./deviceState');
-const { setDeviceIpPersisted } = require('./settings');
+const { setDeviceIpPersisted, setDeviceCredentialsPersisted } = require('./settings');
 const { enrollEmployee } = require('./enroll');
 const { runBackup, BACKUP_DIR, BACKUP_INTERVAL_MS } = require('./backup');
 const logger = require('./logger');
@@ -72,6 +72,9 @@ app.get('/api/settings', (req, res) => {
     deviceIp: hasDeviceIp() ? getDeviceIp() : null,
     deviceMac: process.env.DEVICE_MAC || null,
     autoDiscover: !process.env.DEVICE_IP,
+    // The password itself is never sent back to the client, even on a
+    // trusted LAN — a credential should be write-only over the wire.
+    deviceUser: process.env.DEVICE_USER || null,
     siteName: db.getSetting('site_name', 'დასწრების ჟურნალი'),
     currency: db.getSetting('currency', '₾'),
     pollIntervalMs: db.getPollIntervalMs(),
@@ -87,6 +90,25 @@ app.post('/api/settings/device-ip', (req, res) => {
   setDeviceIpPersisted(ip.trim());
   logger.log(`[settings] device IP manually set to ${ip.trim()}`);
   res.json({ ok: true, deviceIp: ip.trim() });
+});
+
+app.post('/api/settings/device-credentials', (req, res) => {
+  const { user, pass } = req.body || {};
+  if (user !== undefined && (typeof user !== 'string' || !user.trim())) {
+    return res.status(400).json({ error: 'username cannot be empty' });
+  }
+  // An empty password field means "leave it as-is" (the field is never
+  // pre-filled with the real password, so there's no other way to submit
+  // "no change" versus "clear it to blank" — and a blank device password
+  // isn't a meaningful state anyway).
+  const newPass = typeof pass === 'string' && pass.length > 0 ? pass : undefined;
+  const newUser = user !== undefined ? user.trim() : undefined;
+  if (newUser === undefined && newPass === undefined) {
+    return res.status(400).json({ error: 'nothing to update' });
+  }
+  setDeviceCredentialsPersisted({ user: newUser, pass: newPass });
+  logger.log(`[settings] device credentials updated${newUser ? ` (user: ${newUser})` : ''}${newPass ? ' (password changed)' : ''}`);
+  res.json({ ok: true, deviceUser: process.env.DEVICE_USER || null });
 });
 
 app.post('/api/settings/app', (req, res) => {

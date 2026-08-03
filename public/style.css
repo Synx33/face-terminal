@@ -363,6 +363,15 @@ button:disabled { opacity: 0.5; cursor: default; transform: none; }
   line-height: 1.5;
 }
 
+.hint-text.warn-text {
+  color: var(--danger);
+  background: var(--danger-soft);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.7rem;
+  margin: 0 0 0.7rem;
+}
+
 .enroll-msg {
   width: 100%;
   font-family: var(--font-mono);

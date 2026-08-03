@@ -104,6 +104,21 @@
           <button id="saveIpBtn">შენახვა</button>
         </div>
         <div class="enroll-msg" id="ipMsg"></div>
+
+        <div class="field-row">
+          <label for="deviceUserInput">მომხმარებელი</label>
+          <input type="text" id="deviceUserInput" placeholder="admin" />
+        </div>
+        <div class="field-row">
+          <label for="devicePassInput">პაროლი</label>
+          <input type="password" id="devicePassInput" placeholder="უცვლელი, თუ ცარიელია" autocomplete="off" />
+        </div>
+        <p class="hint-text warn-text">⚠ ყურადღებით შეამოწმეთ პაროლი შენახვამდე — არასწორი პაროლი ბლოკავს ტერმინალის ადმინის შესვლას საკმაოდ ხანგრძლივი დროით (დაფიქსირებული შემთხვევა: 26 წუთი). სჯობს ჩასვათ (copy/paste) და არა ხელით აკრიფოთ.</p>
+        <div class="field-row">
+          <span class="hint-text">ტერმინალის ადმინის მომხმარებელი და პაროლი — თუ პაროლი არასწორად შეინახა (მაგ. Windows-ის ლეპტოპზე), აქედან გაასწორეთ ხელახლა აკრეფის გარეშე .env ფაილში.</span>
+          <button id="saveCredsBtn">შენახვა</button>
+        </div>
+        <div class="enroll-msg" id="credsMsg"></div>
       </div>
 
       <div class="subsection">

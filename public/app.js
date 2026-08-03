@@ -513,6 +513,10 @@ const ipMsg = document.getElementById('ipMsg');
 const settingsMsg = document.getElementById('settingsMsg');
 const logView = document.getElementById('logView');
 
+const deviceUserInput = document.getElementById('deviceUserInput');
+const devicePassInput = document.getElementById('devicePassInput');
+const credsMsg = document.getElementById('credsMsg');
+
 const siteNameInput = document.getElementById('siteNameInput');
 const currencyInput = document.getElementById('currencyInput');
 const pollIntervalInput = document.getElementById('pollIntervalInput');
@@ -529,6 +533,9 @@ async function loadSettings() {
   const s = await res.json();
   if (s.deviceIp) deviceIpInput.value = s.deviceIp;
   ipMode.textContent = s.autoDiscover ? '(ავტომატურად მოძებნილია MAC მისამართით — ჩაწერეთ IP მის მისამაგრებლად)' : '(მითითებულია ხელით)';
+  if (s.deviceUser) deviceUserInput.value = s.deviceUser;
+  // devicePassInput is deliberately never pre-filled — the real password
+  // is never sent to the browser at all, only ever written, never read.
   siteNameInput.value = s.siteName;
   currencyInput.value = s.currency;
   pollIntervalInput.value = s.pollIntervalMs;
@@ -626,6 +633,42 @@ document.getElementById('saveIpBtn').addEventListener('click', async () => {
   } catch (err) {
     ipMsg.className = 'enroll-msg err';
     ipMsg.textContent = err.message;
+  }
+});
+
+document.getElementById('saveCredsBtn').addEventListener('click', async () => {
+  const user = deviceUserInput.value.trim();
+  const pass = devicePassInput.value; // not trimmed — a leading/trailing space could be a real (if unusual) part of a password
+  if (!user) {
+    credsMsg.className = 'enroll-msg err';
+    credsMsg.textContent = 'მომხმარებლის სახელი არ შეიძლება იყოს ცარიელი';
+    return;
+  }
+  // A wrong password sent to the terminal can lock its admin login out for
+  // an extended period (observed: 26 minutes from a single failed attempt)
+  // — this dashboard never tests a password against the device before
+  // saving it (that itself would risk triggering the same lockout), so a
+  // typo here isn't caught until something later actually needs the
+  // terminal. A deliberate pause before saving is the only real safeguard.
+  if (pass && !confirm('დარწმუნებული ხართ, რომ პაროლი სწორად შეიყვანეთ? არასწორმა პაროლმა შეიძლება დაბლოკოს ტერმინალის ადმინის შესვლა ხანგრძლივი დროით.')) {
+    return;
+  }
+  credsMsg.className = 'enroll-msg';
+  credsMsg.textContent = 'ინახება…';
+  try {
+    const res = await fetch('/api/settings/device-credentials', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user, pass: pass || undefined }),
+    });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.error || 'ვერ შესრულდა');
+    credsMsg.className = 'enroll-msg ok';
+    credsMsg.textContent = 'შენახულია.';
+    devicePassInput.value = ''; // never leave a just-typed password sitting in the field
+  } catch (err) {
+    credsMsg.className = 'enroll-msg err';
+    credsMsg.textContent = err.message;
   }
 });
 
