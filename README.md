@@ -52,6 +52,17 @@ Restart-Service face-terminal
 Stop-Service face-terminal
 ```
 
+**Update to the latest version** — one command, safe to run any time:
+```powershell
+.\windows\update.ps1
+```
+Fetches the latest code from GitHub and replaces the installed copy, but
+never touches `.env` (your pinned device IP/credentials) or the data
+directory (attendance history, snapshots, backups, logs — which live
+entirely under `C:\ProgramData\face-terminal`, a separate location this
+script never even looks at). Safe to run from any PowerShell — it
+self-elevates the same way `install.ps1` does.
+
 Uninstall:
 ```powershell
 .\windows\uninstall.ps1            # keeps attendance data
