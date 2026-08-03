@@ -112,8 +112,10 @@
         <div class="field-row">
           <label for="devicePassInput">პაროლი</label>
           <input type="password" id="devicePassInput" placeholder="უცვლელი, თუ ცარიელია" autocomplete="off" />
+          <button id="togglePassBtn" class="icon-btn" type="button" title="პაროლის ჩვენება" aria-label="პაროლის ჩვენება">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
         </div>
-        <p class="hint-text warn-text">⚠ ყურადღებით შეამოწმეთ პაროლი შენახვამდე — არასწორი პაროლი ბლოკავს ტერმინალის ადმინის შესვლას საკმაოდ ხანგრძლივი დროით (დაფიქსირებული შემთხვევა: 26 წუთი). სჯობს ჩასვათ (copy/paste) და არა ხელით აკრიფოთ.</p>
         <div class="field-row">
           <span class="hint-text">ტერმინალის ადმინის მომხმარებელი და პაროლი — თუ პაროლი არასწორად შეინახა (მაგ. Windows-ის ლეპტოპზე), აქედან გაასწორეთ ხელახლა აკრეფის გარეშე .env ფაილში.</span>
           <button id="saveCredsBtn">შენახვა</button>

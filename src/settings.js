@@ -9,6 +9,7 @@
 const fs = require('fs');
 const path = require('path');
 const { setDeviceIp } = require('./deviceState');
+const authState = require('./deviceAuthState');
 
 const ENV_PATH = path.join(__dirname, '..', '.env');
 
@@ -43,6 +44,10 @@ function setDeviceCredentialsPersisted({ user, pass }) {
     process.env.DEVICE_PASS = pass;
     setEnvVar('DEVICE_PASS', pass);
   }
+  // Give whatever was just typed an immediate fresh attempt on the next
+  // poll tick, rather than making the user wait out a backoff window that
+  // was set for the OLD (wrong) credentials.
+  authState.resetBackoff();
 }
 
 module.exports = { setDeviceIpPersisted, setDeviceCredentialsPersisted, ENV_PATH };

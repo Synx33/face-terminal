@@ -163,6 +163,8 @@ h1 {
   color: var(--text-muted);
 }
 
+.subtitle.subtitle-err { color: var(--danger); }
+
 .icon-btn {
   display: inline-flex;
   align-items: center;
@@ -221,7 +223,7 @@ h1 {
   margin-bottom: 1.25rem;
 }
 
-input[type=date], button, input[type=text], input[type=file], select {
+input[type=date], button, input[type=text], input[type=password], input[type=file], select {
   font-family: var(--font-body);
   font-size: 0.85rem;
   color: var(--text);
@@ -363,14 +365,6 @@ button:disabled { opacity: 0.5; cursor: default; transform: none; }
   line-height: 1.5;
 }
 
-.hint-text.warn-text {
-  color: var(--danger);
-  background: var(--danger-soft);
-  border: 1px solid var(--danger);
-  border-radius: var(--radius);
-  padding: 0.5rem 0.7rem;
-  margin: 0 0 0.7rem;
-}
 
 .enroll-msg {
   width: 100%;
@@ -520,8 +514,9 @@ button:disabled { opacity: 0.5; cursor: default; transform: none; }
   min-width: 11em;
 }
 
-.field-row input[type=text] { flex: 1 1 180px; }
+.field-row input[type=text], .field-row input[type=password] { flex: 1 1 180px; }
 .input-narrow { flex: 0 1 110px !important; }
+.field-row .icon-btn { flex-shrink: 0; }
 
 /* --- settings modal -------------------------------------------------------------- */
 

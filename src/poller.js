@@ -15,6 +15,7 @@ const deviceClient = require('./deviceClient');
 const { parseJsonEvent, isCheckin } = require('./hikParser');
 const { isoWithOffset } = require('./time');
 const logger = require('./logger');
+const authState = require('./deviceAuthState');
 
 // Small overlap on every poll so a slow tick never loses an event at the
 // window boundary — duplicates are harmless, insertCheckin dedupes by serialNo.
@@ -74,6 +75,13 @@ function startPolling(intervalMs, onNewCheckin, onPollError) {
   let inFlight = false;
   const tick = () => {
     if (inFlight) return;
+    // Skip this tick entirely (no request attempted at all, no error/success
+    // callback fired) while we already know the device is rejecting our
+    // credentials — retrying every intervalMs into a known-bad-auth state
+    // would just be the same hammering this backoff exists to prevent, and
+    // it wouldn't tell forceRediscover() anything useful either (the device
+    // is reachable at its current IP, it's just rejecting the password).
+    if (authState.isBackedOff()) return;
     inFlight = true;
     pollOnce(onNewCheckin)
       .then(() => onPollError && onPollError(null))

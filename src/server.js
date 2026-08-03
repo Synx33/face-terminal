@@ -13,6 +13,7 @@ const { getDeviceIp, hasDeviceIp } = require('./deviceState');
 const { setDeviceIpPersisted, setDeviceCredentialsPersisted } = require('./settings');
 const { enrollEmployee } = require('./enroll');
 const { runBackup, BACKUP_DIR, BACKUP_INTERVAL_MS } = require('./backup');
+const authState = require('./deviceAuthState');
 const logger = require('./logger');
 
 const PORT = Number(process.env.PORT || 3070);
@@ -43,6 +44,19 @@ async function capturePhoto(row) {
   }
 }
 
+// A manual retry loop (someone clicking Capture repeatedly out of
+// frustration) is a smaller-scale version of the same problem the poller's
+// backoff exists for — check this before ever attempting a device call from
+// a user-triggered route, so a known-bad-auth state gets one clear error
+// message instead of silently piling on more failed attempts.
+function rejectIfAuthBackedOff(res) {
+  const status = authState.status();
+  if (!status.failing) return false;
+  const minutesLeft = Math.max(1, Math.ceil((status.retryAt - Date.now()) / 60_000));
+  res.status(503).json({ error: `ტერმინალმა უარყო წვდომა — ავტომატური მცდელობები შეჩერებულია დაახლოებით ${minutesLeft} წუთით, შესაძლო დაბლოკვის თავიდან ასაცილებლად. შეამოწმეთ პაროლი პარამეტრებში — მისი გასწორებისთანავე ავტომატური მცდელობა დაუყოვნებლივ განახლდება.` });
+  return true;
+}
+
 // --- read API for the dashboard ---------------------------------------------
 app.get('/api/checkins', (req, res) => {
   const { date, employeeNo, limit } = req.query;
@@ -57,7 +71,7 @@ app.get('/api/checkins', (req, res) => {
 });
 
 app.get('/api/device', (req, res) => {
-  res.json({ model: 'DS-K1T343EWX', ip: hasDeviceIp() ? getDeviceIp() : null });
+  res.json({ model: 'DS-K1T343EWX', ip: hasDeviceIp() ? getDeviceIp() : null, auth: authState.status() });
 });
 
 app.get('/api/stats', (req, res) => {
@@ -199,6 +213,7 @@ app.post('/api/employees', async (req, res) => {
       !(Number.isFinite(Number(dailyWage)) && Number(dailyWage) >= 0)) {
     return res.status(400).json({ error: 'daily wage must be a non-negative number' });
   }
+  if (rejectIfAuthBackedOff(res)) return;
   try {
     const result = await enrollEmployee({
       name: name.trim(),
@@ -214,6 +229,7 @@ app.post('/api/employees', async (req, res) => {
 });
 
 app.post('/api/pending-workers', async (req, res) => {
+  if (rejectIfAuthBackedOff(res)) return;
   try {
     const jpeg = await deviceClient.fetchSnapshot();
     const picturePath = savePendingSnapshot(jpeg);
@@ -239,6 +255,7 @@ app.post('/api/pending-workers/:id/claim', async (req, res) => {
       !(Number.isFinite(Number(dailyWage)) && Number(dailyWage) >= 0)) {
     return res.status(400).json({ error: 'daily wage must be a non-negative number' });
   }
+  if (rejectIfAuthBackedOff(res)) return;
   const pending = db.getPendingWorker(id);
   if (!pending) return res.status(404).json({ error: 'no such pending capture' });
 
@@ -284,6 +301,9 @@ app.put('/api/employees/:employeeNo', async (req, res) => {
     return res.status(400).json({ error: 'daily wage must be a non-negative number' });
   }
   const wage = dailyWage === undefined ? undefined : (dailyWage === null ? null : Number(dailyWage));
+  // Only the rename branch below actually touches the device — a wage-only
+  // edit is a pure local DB write, so it's never gated on device auth state.
+  if (name !== undefined && rejectIfAuthBackedOff(res)) return;
   try {
     if (name !== undefined) {
       // Renaming touches the device too — modifyDeviceUser resets that
@@ -307,6 +327,7 @@ app.put('/api/employees/:employeeNo', async (req, res) => {
 
 app.delete('/api/employees/:employeeNo', async (req, res) => {
   const { employeeNo } = req.params;
+  if (rejectIfAuthBackedOff(res)) return;
   try {
     // Removes both the device user AND their enrolled face (the device
     // treats a face as an attribute of the user, not a separate record) —
@@ -365,6 +386,12 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 
 // --- startup -----------------------------------------------------------------
 async function syncEmployees() {
+  // Same reasoning as the poller's skip-gate: don't add another 401 to the
+  // pile every 30 minutes while we already know auth is failing.
+  if (authState.isBackedOff()) {
+    logger.log('[sync] skipping employee sync — device auth is currently backed off, see Settings');
+    return;
+  }
   try {
     const users = await deviceClient.fetchAllUsers();
     const deviceNos = new Set(users.map((u) => String(u.employeeNo)));

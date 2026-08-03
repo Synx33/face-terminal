@@ -6,11 +6,17 @@
 const { digestRequest } = require('./digest');
 const { getDeviceIp } = require('./deviceState');
 const { georgiaNaive } = require('./time');
+const authState = require('./deviceAuthState');
 
 function baseUrl() {
   const protocol = process.env.DEVICE_PROTOCOL || 'http';
   return `${protocol}://${getDeviceIp()}`;
 }
+
+// Thrown specifically for a 401 so callers (the poller, in particular) can
+// tell "credentials are wrong" apart from "network blip" and react
+// differently — see deviceAuthState.js for why that distinction matters.
+class DeviceAuthError extends Error {}
 
 async function isapi(method, path, jsonBody) {
   const res = await digestRequest({
@@ -21,9 +27,14 @@ async function isapi(method, path, jsonBody) {
     headers: jsonBody ? { 'Content-Type': 'application/json' } : {},
     body: jsonBody ? JSON.stringify(jsonBody) : undefined,
   });
+  if (res.status === 401) {
+    authState.recordAuthFailure();
+    throw new DeviceAuthError(`ISAPI ${method} ${path} -> HTTP 401: authentication failed — check the terminal's username/password in Settings`);
+  }
   if (res.status >= 300) {
     throw new Error(`ISAPI ${method} ${path} -> HTTP ${res.status}: ${res.text.slice(0, 300)}`);
   }
+  authState.recordAuthSuccess();
   return JSON.parse(res.text);
 }
 
@@ -75,7 +86,12 @@ async function fetchSnapshot() {
     username: process.env.DEVICE_USER,
     password: process.env.DEVICE_PASS,
   });
+  if (res.status === 401) {
+    authState.recordAuthFailure();
+    throw new DeviceAuthError('fetchSnapshot -> HTTP 401: authentication failed — check the terminal\'s username/password in Settings');
+  }
   if (res.status !== 200) throw new Error(`fetchSnapshot -> HTTP ${res.status}`);
+  authState.recordAuthSuccess();
   return res.buffer;
 }
 
@@ -146,7 +162,12 @@ async function uploadFace({ employeeNo, jpegBuffer }) {
     headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
     body,
   });
+  if (res.status === 401) {
+    authState.recordAuthFailure();
+    throw new DeviceAuthError('uploadFace -> HTTP 401: authentication failed — check the terminal\'s username/password in Settings');
+  }
   if (res.status >= 300) throw new Error(`uploadFace -> HTTP ${res.status}: ${res.text.slice(0, 300)}`);
+  authState.recordAuthSuccess();
   return JSON.parse(res.text);
 }
 
@@ -159,4 +180,5 @@ async function deleteDeviceUser(employeeNo) {
 
 module.exports = {
   fetchAllUsers, fetchEvents, fetchSnapshot, nextEmployeeNo, createDeviceUser, modifyDeviceUser, uploadFace, deleteDeviceUser,
+  DeviceAuthError,
 };

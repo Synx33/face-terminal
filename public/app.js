@@ -287,11 +287,25 @@ async function loadDeviceInfo() {
   try {
     const res = await fetch('/api/device');
     const info = await res.json();
-    document.getElementById('deviceSubtitle').textContent = info.ip ? `${info.model} · ${info.ip}` : `${info.model} · ეძებს…`;
+    const subtitleEl = document.getElementById('deviceSubtitle');
+    const base = info.ip ? `${info.model} · ${info.ip}` : `${info.model} · ეძებს…`;
+    if (info.auth?.failing) {
+      const minutesLeft = Math.max(1, Math.ceil((info.auth.retryAt - Date.now()) / 60_000));
+      subtitleEl.textContent = `${base} · ავტორიზაცია ვერ მოხერხდა (სცადეთ ${minutesLeft} წთ-ში ან შეასწორეთ პაროლი პარამეტრებში)`;
+      subtitleEl.classList.add('subtitle-err');
+    } else {
+      subtitleEl.textContent = base;
+      subtitleEl.classList.remove('subtitle-err');
+    }
   } catch {
     // cosmetic only — fine if this silently stays as the static fallback text
   }
 }
+
+// The auth-failure state can change on its own between page loads (backoff
+// expiring, or someone fixing the password from another tab/device) —
+// re-check it periodically instead of only once at page load.
+setInterval(loadDeviceInfo, 30_000);
 
 document.getElementById('exportCsvBtn').addEventListener('click', () => {
   const params = new URLSearchParams({ date: dateInput.value });
@@ -665,11 +679,15 @@ document.getElementById('saveCredsBtn').addEventListener('click', async () => {
     if (!res.ok) throw new Error(result.error || 'ვერ შესრულდა');
     credsMsg.className = 'enroll-msg ok';
     credsMsg.textContent = 'შენახულია.';
-    devicePassInput.value = ''; // never leave a just-typed password sitting in the field
   } catch (err) {
     credsMsg.className = 'enroll-msg err';
     credsMsg.textContent = err.message;
   }
+});
+
+document.getElementById('togglePassBtn').addEventListener('click', () => {
+  const showing = devicePassInput.type === 'text';
+  devicePassInput.type = showing ? 'password' : 'text';
 });
 
 document.getElementById('clearHistoryBtn').addEventListener('click', async () => {
