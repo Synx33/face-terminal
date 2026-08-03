@@ -86,12 +86,11 @@ async function nextEmployeeNo() {
   return String((nums.length ? Math.max(...nums) : 0) + 1);
 }
 
-/** Creates or updates an enrolled user (name + door rights). Face photo is a separate call. */
-async function upsertDeviceUser({ employeeNo, name }) {
+function userInfoRecord({ employeeNo, name }) {
   const now = new Date();
   const tenYearsOut = new Date(now);
   tenYearsOut.setFullYear(tenYearsOut.getFullYear() + 10);
-  return isapi('POST', '/ISAPI/AccessControl/UserInfo/Record?format=json', {
+  return {
     UserInfo: {
       employeeNo: String(employeeNo),
       name,
@@ -108,7 +107,17 @@ async function upsertDeviceUser({ employeeNo, name }) {
       doorRight: '1',
       RightPlan: [{ doorNo: 1, planTemplateNo: '1' }],
     },
-  });
+  };
+}
+
+/** Creates a brand-new enrolled user. employeeNo MUST NOT already exist on the device (use nextEmployeeNo()) — confirmed live: this endpoint is create-only and returns "employeeNoAlreadyExist" (HTTP 400) for an existing one, that's what Modify below is for. */
+async function createDeviceUser({ employeeNo, name }) {
+  return isapi('POST', '/ISAPI/AccessControl/UserInfo/Record?format=json', userInfoRecord({ employeeNo, name }));
+}
+
+/** Updates an already-enrolled user's name/rights (e.g. a rename from the dashboard). employeeNo MUST already exist — confirmed live against the device's UserInfo/Modify endpoint. */
+async function modifyDeviceUser({ employeeNo, name }) {
+  return isapi('PUT', '/ISAPI/AccessControl/UserInfo/Modify?format=json', userInfoRecord({ employeeNo, name }));
 }
 
 /** Uploads a face photo for an already-created employeeNo. jpegBuffer must be a real JPEG. */
@@ -149,5 +158,5 @@ async function deleteDeviceUser(employeeNo) {
 }
 
 module.exports = {
-  fetchAllUsers, fetchEvents, fetchSnapshot, nextEmployeeNo, upsertDeviceUser, uploadFace, deleteDeviceUser,
+  fetchAllUsers, fetchEvents, fetchSnapshot, nextEmployeeNo, createDeviceUser, modifyDeviceUser, uploadFace, deleteDeviceUser,
 };

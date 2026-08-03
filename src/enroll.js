@@ -6,10 +6,10 @@
 const db = require('./db');
 const deviceClient = require('./deviceClient');
 
-async function enrollEmployee({ name, jpegBuffer }) {
+async function enrollEmployee({ name, jpegBuffer, dailyWage }) {
   const employeeNo = await deviceClient.nextEmployeeNo();
-  await deviceClient.upsertDeviceUser({ employeeNo, name });
-  db.upsertEmployee(employeeNo, name);
+  await deviceClient.createDeviceUser({ employeeNo, name });
+  db.upsertEmployee(employeeNo, name, dailyWage);
 
   let photoWarning;
   if (jpegBuffer) {

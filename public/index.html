@@ -1,9 +1,12 @@
 <!doctype html>
-<html lang="en">
+<html lang="ka">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Access Log — Face Terminal</title>
+<title id="pageTitle">დასწრების ჟურნალი — სახის ტერმინალი</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="preload" href="/fonts/noto-sans-georgian-geo.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="/fonts/noto-serif-georgian-geo.woff2" as="font" type="font/woff2" crossorigin />
 <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
@@ -11,51 +14,140 @@
     <header class="top">
       <div class="brand">
         <span class="dot" id="liveDot"></span>
-        <h1>Access Log</h1>
+        <h1 id="siteTitle">დასწრების ჟურნალი</h1>
       </div>
-      <span class="subtitle" id="deviceSubtitle">DS-K1T343EWX</span>
+      <div class="top-right">
+        <span class="subtitle" id="deviceSubtitle">DS-K1T343EWX</span>
+        <button id="settingsBtn" class="icon-btn" title="პარამეტრები" aria-label="პარამეტრები">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </button>
+      </div>
     </header>
 
-    <div class="controls">
-      <input type="date" id="dateFilter" />
-      <button id="todayBtn">Today</button>
-      <span id="status"></span>
-    </div>
+    <nav class="tabs" role="tablist">
+      <button class="tab" data-tab="feed" role="tab" aria-selected="true">ჩანაწერები</button>
+      <button class="tab" data-tab="workers" role="tab" aria-selected="false">თანამშრომლები</button>
+      <button class="tab" data-tab="payroll" role="tab" aria-selected="false">ხელფასი</button>
+    </nav>
 
-    <div class="feed" id="rows"></div>
-    <div class="empty" id="emptyMsg" hidden>No check-ins for this day yet.</div>
+    <main>
+      <section class="tab-panel" data-panel="feed">
+        <div class="controls">
+          <input type="date" id="dateFilter" />
+          <button id="todayBtn">დღეს</button>
+          <select id="employeeFilter">
+            <option value="">ყველა თანამშრომელი</option>
+          </select>
+          <button id="exportCsvBtn" title="ჩამოტვირთეთ ეს ხედი CSV ფაილად">CSV</button>
+          <span id="status"></span>
+        </div>
 
-    <section class="panel">
-      <h2>Add worker</h2>
-      <p class="panel-hint">Have each new worker stand in front of the terminal and hit capture — do this for everyone first, then come back and put in names.</p>
-      <button id="captureBtn" class="primary">Capture new face</button>
-      <div class="enroll-msg" id="captureMsg"></div>
-      <div class="pending-grid" id="pendingGrid"></div>
-    </section>
+        <div class="feed" id="rows"></div>
+        <div class="empty" id="emptyMsg" hidden>დღეს ჩანაწერი ჯერ არ არის.</div>
+      </section>
 
-    <section class="panel">
-      <h2>Settings</h2>
+      <section class="tab-panel" data-panel="workers" hidden>
+        <div class="subsection">
+          <h2>ახალი სახის დამატება</h2>
+          <p class="panel-hint">ახალი თანამშრომელი დააყენეთ ტერმინალის წინ და დააჭირეთ ღილაკს — ჯერ ეს ყველასთვის გააკეთეთ, შემდეგ დაუბრუნდით და მიუთითეთ სახელი და, სურვილისამებრ, დღიური ანაზღაურება.</p>
+          <button id="captureBtn" class="primary">ახალი სახის გადაღება</button>
+          <div class="enroll-msg" id="captureMsg"></div>
+          <div class="pending-grid" id="pendingGrid"></div>
+        </div>
 
-      <div class="settings-row">
-        <label for="deviceIpInput">Terminal IP</label>
-        <input type="text" id="deviceIpInput" placeholder="10.10.11.184" />
-        <button id="saveIpBtn">Save</button>
-        <span id="ipMode" class="ip-mode"></span>
-      </div>
-      <div class="enroll-msg" id="ipMsg"></div>
+        <div class="subsection">
+          <h2>რეგისტრირებული თანამშრომლები</h2>
+          <p class="panel-hint">შეცვალეთ სახელი ან დღიური ანაზღაურება, ან წაშალეთ ვინმე — წაშლისას იშლება მისი სახეც და წვდომაც თავად ტერმინალიდან, არა მხოლოდ ამ დაფიდან.</p>
+          <div class="worker-grid" id="workerGrid"></div>
+        </div>
+      </section>
 
-      <div class="settings-row">
-        <button id="clearHistoryBtn" class="danger">Clear check-in history</button>
-        <button id="clearLogBtn">Clear log</button>
-        <button id="viewLogBtn">View log</button>
-      </div>
-      <div class="enroll-msg" id="settingsMsg"></div>
-      <pre id="logView" hidden></pre>
-    </section>
+      <section class="tab-panel" data-panel="payroll" hidden>
+        <p class="panel-hint">დამსწრე დღეების რაოდენობა მითითებულ პერიოდში, გამრავლებული თითოეული თანამშრომლის დღიურ ანაზღაურებაზე. დღე ითვლება ერთხელ, მიუხედავად სკანირებების რაოდენობისა იმ დღეს.</p>
+        <div class="controls">
+          <label for="payrollStart">დან</label>
+          <input type="date" id="payrollStart" />
+          <label for="payrollEnd">მდე</label>
+          <input type="date" id="payrollEnd" />
+          <button id="calcPayrollBtn" class="primary">გამოთვლა</button>
+          <button id="exportPayrollBtn">CSV</button>
+        </div>
+        <div class="enroll-msg" id="payrollMsg"></div>
+        <table class="payroll-table" id="payrollTable" hidden>
+          <thead><tr><th>თანამშრომელი</th><th>დღეები</th><th>დღიური განაკვეთი</th><th>ჯამი</th></tr></thead>
+          <tbody id="payrollBody"></tbody>
+        </table>
+      </section>
+    </main>
   </div>
 
+  <dialog id="settingsModal">
+    <div class="modal-head">
+      <h2>პარამეტრები</h2>
+      <button id="settingsCloseBtn" class="icon-btn" aria-label="დახურვა">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+
+    <div class="modal-body">
+      <div class="subsection">
+        <h3>ტერმინალი</h3>
+        <div class="field-row">
+          <label for="deviceIpInput">IP მისამართი</label>
+          <input type="text" id="deviceIpInput" placeholder="10.10.11.184" />
+        </div>
+        <div class="field-row">
+          <span id="ipMode" class="hint-text"></span>
+          <button id="saveIpBtn">შენახვა</button>
+        </div>
+        <div class="enroll-msg" id="ipMsg"></div>
+      </div>
+
+      <div class="subsection">
+        <h3>ზოგადი</h3>
+        <div class="field-row">
+          <label for="siteNameInput">დასახელება</label>
+          <input type="text" id="siteNameInput" placeholder="დასწრების ჟურნალი" />
+        </div>
+        <div class="field-row">
+          <label for="currencyInput">ვალუტა</label>
+          <input type="text" id="currencyInput" placeholder="₾" class="input-narrow" />
+        </div>
+        <div class="field-row">
+          <label for="pollIntervalInput">შემოწმების ინტერვალი (მწმ)</label>
+          <input type="text" id="pollIntervalInput" placeholder="1500" class="input-narrow" />
+        </div>
+        <div class="field-row">
+          <label for="debounceInput">გამეორების ინტერვალი (წმ)</label>
+          <input type="text" id="debounceInput" placeholder="60" class="input-narrow" />
+        </div>
+        <p class="hint-text">განსაზღვრავს, რამდენად ხშირად მოწმდება ახალი სკანირება და რამდენ ხანს ითვლება განმეორებითი სკანირება იმავე ვიზიტად.</p>
+        <button id="saveAppSettingsBtn" class="primary">პარამეტრების შენახვა</button>
+        <div class="enroll-msg" id="appSettingsMsg"></div>
+      </div>
+
+      <div class="subsection">
+        <h3>მონაცემები და სარეზერვო ასლები</h3>
+        <div class="field-row">
+          <button id="clearHistoryBtn" class="danger">ისტორიის გასუფთავება</button>
+          <button id="clearLogBtn">ლოგის გასუფთავება</button>
+          <button id="viewLogBtn">ლოგის ნახვა</button>
+        </div>
+        <div class="field-row">
+          <button id="backupNowBtn">სარეზერვო ასლის შექმნა ახლავე</button>
+        </div>
+        <div class="enroll-msg" id="settingsMsg"></div>
+        <pre id="logView" hidden></pre>
+        <div id="backupList" class="hint-text"></div>
+      </div>
+    </div>
+  </dialog>
+
   <div class="lightbox" id="lightbox" hidden>
-    <button class="lightbox-close" id="lightboxClose" aria-label="Close">×</button>
+    <button class="lightbox-close" id="lightboxClose" aria-label="დახურვა">×</button>
     <img id="lightboxImg" src="" alt="" />
   </div>
 

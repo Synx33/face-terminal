@@ -15,6 +15,14 @@ db.exec(`
     updated_at  TEXT
   );
 
+  -- Free-form key/value store for anything the client should be able to
+  -- customize from the dashboard (site name, currency, poll interval,
+  -- debounce window, ...) without editing .env or restarting anything.
+  CREATE TABLE IF NOT EXISTS app_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+  );
+
   CREATE TABLE IF NOT EXISTS checkins (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     serial_no    INTEGER UNIQUE,
@@ -50,20 +58,74 @@ if (!existingCols.includes('picture_path')) {
   db.exec('ALTER TABLE checkins ADD COLUMN picture_path TEXT');
 }
 
+// daily_wage was added after employees already existed in production — same
+// ALTER TABLE guard as picture_path above.
+const existingEmployeeCols = db.prepare('PRAGMA table_info(employees)').all().map((c) => c.name);
+if (!existingEmployeeCols.includes('daily_wage')) {
+  db.exec('ALTER TABLE employees ADD COLUMN daily_wage REAL');
+}
+
 const upsertEmployeeStmt = db.prepare(`
-  INSERT INTO employees (employee_no, name, updated_at) VALUES (?, ?, ?)
-  ON CONFLICT(employee_no) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at
+  INSERT INTO employees (employee_no, name, daily_wage, updated_at) VALUES (?, ?, ?, ?)
+  ON CONFLICT(employee_no) DO UPDATE SET
+    name = excluded.name,
+    daily_wage = COALESCE(excluded.daily_wage, employees.daily_wage),
+    updated_at = excluded.updated_at
 `);
 
-function upsertEmployee(employeeNo, name) {
+// dailyWage is optional (device sync and plain enrollment don't know about
+// it) — when omitted, COALESCE above leaves whatever wage is already on
+// file untouched instead of clobbering it back to NULL.
+function upsertEmployee(employeeNo, name, dailyWage) {
   if (!employeeNo) return;
-  upsertEmployeeStmt.run(String(employeeNo), name || null, new Date().toISOString());
+  upsertEmployeeStmt.run(String(employeeNo), name || null, dailyWage ?? null, new Date().toISOString());
 }
 
 function employeeName(employeeNo) {
   if (!employeeNo) return null;
   const row = db.prepare('SELECT name FROM employees WHERE employee_no = ?').get(String(employeeNo));
   return row ? row.name : null;
+}
+
+function listEmployees() {
+  return db.prepare(`
+    SELECT e.employee_no, e.name, e.daily_wage, e.updated_at,
+      (SELECT c.picture_path FROM checkins c
+       WHERE c.employee_no = e.employee_no AND c.picture_path IS NOT NULL
+       ORDER BY c.event_time DESC LIMIT 1) AS picture_path
+    FROM employees e
+    ORDER BY e.name COLLATE NOCASE ASC
+  `).all();
+}
+
+function setEmployeeWage(employeeNo, dailyWage) {
+  db.prepare('UPDATE employees SET daily_wage = ?, updated_at = ? WHERE employee_no = ?')
+    .run(dailyWage ?? null, new Date().toISOString(), String(employeeNo));
+}
+
+/** Removes the employee from the local roster only — caller is responsible for removing them on the device too. Attendance history is kept (it's a historical record, not tied to whether they're still active). */
+function deleteEmployeeLocal(employeeNo) {
+  db.prepare('DELETE FROM employees WHERE employee_no = ?').run(String(employeeNo));
+}
+
+function getSetting(key, fallback) {
+  const row = db.prepare('SELECT value FROM app_settings WHERE key = ?').get(key);
+  return row && row.value !== null ? row.value : fallback;
+}
+
+function setSetting(key, value) {
+  db.prepare(`
+    INSERT INTO app_settings (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(key, String(value));
+}
+
+function getDebounceSeconds() {
+  return Number(getSetting('debounce_seconds', process.env.CHECKIN_DEBOUNCE_SECONDS || 60));
+}
+
+function getPollIntervalMs() {
+  return Number(getSetting('poll_interval_ms', process.env.POLL_INTERVAL_MS || 5000));
 }
 
 const insertCheckinStmt = db.prepare(`
@@ -108,12 +170,13 @@ function getCheckinById(id) {
 // unsure if it registered scans again, or the camera catches the same face
 // twice in quick succession. Treated naively (every scan flips in/out),
 // that turns one real visit into a spurious in/out/in flicker. Instead,
-// scans by the same employee within DEBOUNCE_SECONDS of each other collapse
-// into a single "session": only a gap bigger than the threshold starts a
-// new one, and direction alternates per session, not per raw scan. Every
-// raw scan still gets its own row in the table (nothing is discarded), this
-// only affects how they're grouped/labeled for display.
-const DEBOUNCE_SECONDS = Number(process.env.CHECKIN_DEBOUNCE_SECONDS || 60);
+// scans by the same employee within the debounce window of each other
+// collapse into a single "session": only a gap bigger than the threshold
+// starts a new one, and direction alternates per session, not per raw scan.
+// Every raw scan still gets its own row in the table (nothing is
+// discarded), this only affects how they're grouped/labeled for display.
+// The window itself is customizable live from Settings (getDebounceSeconds
+// above), so it's read fresh on every call rather than frozen at startup.
 
 /** Most recent OTHER checkin for this employee strictly before the given time — used to decide if a new scan starts a new session or continues one. */
 function priorCheckinForEmployee(employeeNo, beforeEventTime, excludeId) {
@@ -130,7 +193,7 @@ function isSameSession(employeeNo, eventTime, excludeId) {
   const prior = priorCheckinForEmployee(employeeNo, eventTime, excludeId);
   if (!prior) return false;
   const gapSeconds = (new Date(eventTime) - new Date(prior.event_time)) / 1000;
-  return gapSeconds >= 0 && gapSeconds <= DEBOUNCE_SECONDS;
+  return gapSeconds >= 0 && gapSeconds <= getDebounceSeconds();
 }
 
 // Direction (check-in/check-out) isn't a device concept on this terminal —
@@ -195,7 +258,7 @@ function listCheckins({ date, employeeNo, limit = 200 } = {}) {
     GROUP BY employee_no, substr(event_time, 1, 10), COALESCE(session_no, id)
     ORDER BY event_time DESC LIMIT ?
   `;
-  params.push(DEBOUNCE_SECONDS, limit);
+  params.push(getDebounceSeconds(), limit);
   return db.prepare(sql).all(...params);
 }
 
@@ -232,8 +295,28 @@ function deletePendingWorker(id) {
   db.prepare('DELETE FROM pending_workers WHERE id = ?').run(id);
 }
 
+// Daily-wage payroll: counts DISTINCT calendar days a person showed up at
+// all in [start, end] (inclusive, "YYYY-MM-DD" strings) x their daily wage.
+// Deliberately simple — no hours/overtime math, because the terminal has no
+// concept of a shift, only scans. A day with one scan or ten still counts
+// as one day worked, same as check-in/out direction already treats it.
+function payroll({ start, end }) {
+  return db.prepare(`
+    SELECT e.employee_no, e.name, e.daily_wage,
+      COUNT(DISTINCT substr(c.event_time, 1, 10)) AS days_present,
+      COUNT(DISTINCT substr(c.event_time, 1, 10)) * COALESCE(e.daily_wage, 0) AS total_pay
+    FROM employees e
+    LEFT JOIN checkins c
+      ON c.employee_no = e.employee_no
+     AND substr(c.event_time, 1, 10) BETWEEN ? AND ?
+    GROUP BY e.employee_no
+    ORDER BY e.name COLLATE NOCASE ASC
+  `).all(start, end);
+}
+
 module.exports = {
   db, upsertEmployee, employeeName, insertCheckin, listCheckins, stats, clearCheckins, DB_PATH,
-  setCheckinPicture, getCheckinById, isSameSession, DEBOUNCE_SECONDS,
+  setCheckinPicture, getCheckinById, isSameSession, getDebounceSeconds, getPollIntervalMs,
   insertPendingWorker, listPendingWorkers, getPendingWorker, deletePendingWorker,
+  listEmployees, setEmployeeWage, deleteEmployeeLocal, getSetting, setSetting, payroll,
 };

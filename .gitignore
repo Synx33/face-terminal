@@ -9,5 +9,6 @@ data/*.db
 data/*.db-wal
 data/*.db-shm
 data/snapshots/
+data/backups/
 data/app.log*
 .gitnexus

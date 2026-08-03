@@ -1,43 +1,88 @@
-@import url('https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
-
-:root {
-  color-scheme: dark;
-  --bg: #0b0f10;
-  --bg-grid: #0d1214;
-  --surface: #12181a;
-  --surface-raised: #161d1f;
-  --border: #22302f;
-  --text: #e9f2ef;
-  --text-muted: #7f9d97;
-  --text-faint: #56706b;
-  --accent: #33e0a1;
-  --accent-dim: #1b6b52;
-  --accent-glow: rgba(51, 224, 161, 0.18);
-  --out: #7a95a3;
-  --danger: #ff6b6b;
-  --danger-dim: #4a2323;
-  --radius: 10px;
-  --font-display: 'Archivo', system-ui, sans-serif;
-  --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', monospace;
+/* Self-hosted (see /public/fonts) rather than a CDN import — this runs on a
+   site laptop that may have no internet access post-install, and a live
+   Google Fonts request would be a silent failure risk. Georgian (Mkhedruli)
+   needs its own subset since most Latin display fonts don't include it at
+   all — Noto Sans/Serif Georgian are Google's purpose-built pan-script
+   families with real Georgian coverage, used here for both scripts so
+   mixed Georgian/Latin content (a name typed in either script) never falls
+   back to a mismatched system font mid-sentence. */
+@font-face {
+  font-family: 'Registry Sans';
+  src: url('/fonts/noto-sans-georgian-geo.woff2') format('woff2');
+  unicode-range: U+0589, U+10A0-10FF, U+1C90-1CBA, U+1CBD-1CBF, U+205A, U+2D00-2D2F, U+2E31;
+  font-weight: 400 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Registry Sans';
+  src: url('/fonts/noto-sans-georgian-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2122;
+  font-weight: 400 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Registry Serif';
+  src: url('/fonts/noto-serif-georgian-geo.woff2') format('woff2');
+  unicode-range: U+0589, U+10A0-10FF, U+1C90-1CBA, U+1CBD-1CBF, U+205A, U+2D00-2D2F, U+2E31;
+  font-weight: 400 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Registry Serif';
+  src: url('/fonts/noto-serif-georgian-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2122;
+  font-weight: 400 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Registry Mono';
+  src: url('/fonts/jetbrains-mono-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+2000-206F;
+  font-weight: 400 600;
+  font-display: swap;
 }
 
-@media (prefers-color-scheme: light) {
+/* --- palette: "registry / ledger" — warm paper, ruled lines, ink-green accent,
+   deliberately not another blue-SaaS or neon-terminal dashboard. ---------- */
+:root {
+  color-scheme: light;
+  --bg: #f7f4ec;
+  --surface: #fdfcf8;
+  --surface-raised: #f0ebe0;
+  --border: #ddd5c3;
+  --rule: #cfc5ac;
+  --text: #23201a;
+  --text-muted: #6b6355;
+  --text-faint: #a09879;
+  --accent: #2f5d4c;
+  --accent-ink: #24483a;
+  --accent-soft: #e2ebe4;
+  --out: #6b6355;
+  --danger: #a3372e;
+  --danger-soft: #f3e4e1;
+  --radius: 3px;
+  --font-display: 'Registry Serif', Georgia, serif;
+  --font-body: 'Registry Sans', system-ui, sans-serif;
+  --font-mono: 'Registry Mono', ui-monospace, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
   :root {
-    color-scheme: light;
-    --bg: #f4f7f6;
-    --bg-grid: #eef2f1;
-    --surface: #ffffff;
-    --surface-raised: #ffffff;
-    --border: #dbe5e2;
-    --text: #10201d;
-    --text-muted: #56706b;
-    --text-faint: #8aa19d;
-    --accent: #0f9d6f;
-    --accent-dim: #d3f3e6;
-    --accent-glow: rgba(15, 157, 111, 0.12);
-    --out: #6b8088;
-    --danger: #d64545;
-    --danger-dim: #fbe3e3;
+    color-scheme: dark;
+    --bg: #1a1712;
+    --surface: #221e17;
+    --surface-raised: #2a2519;
+    --border: #3c3527;
+    --rule: #453d2c;
+    --text: #ece6d8;
+    --text-muted: #a89d84;
+    --text-faint: #6f6552;
+    --accent: #74af97;
+    --accent-ink: #8fc4ae;
+    --accent-soft: #263630;
+    --out: #a89d84;
+    --danger: #d9847a;
+    --danger-soft: #382320;
   }
 }
 
@@ -45,31 +90,29 @@
 
 body {
   margin: 0;
-  background:
-    radial-gradient(ellipse 900px 500px at 15% -10%, var(--accent-glow), transparent 60%),
-    linear-gradient(var(--bg-grid) 1px, transparent 1px) 0 0 / 100% 42px,
-    var(--bg);
+  background: var(--bg);
   color: var(--text);
-  font-family: var(--font-display);
+  font-family: var(--font-body);
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 .wrap {
-  max-width: 880px;
+  max-width: 900px;
   margin: 0 auto;
-  padding: 2.5rem 1.5rem 4rem;
+  padding: 2rem 1.5rem 4rem;
 }
 
-/* --- header -------------------------------------------------------------- */
+/* --- header ---------------------------------------------------------------- */
 
 header.top {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   justify-content: space-between;
-  margin-bottom: 2rem;
+  margin-bottom: 1.5rem;
   padding-bottom: 1.25rem;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 2px solid var(--text);
 }
 
 .brand {
@@ -79,77 +122,132 @@ header.top {
 }
 
 .brand .dot {
-  width: 9px;
-  height: 9px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: var(--text-faint);
   display: inline-block;
   position: relative;
-  top: -2px;
+  top: -3px;
+  flex-shrink: 0;
 }
 
 .brand .dot.live {
   background: var(--accent);
-  box-shadow: 0 0 0 0 var(--accent-glow);
-  animation: pulse 2s infinite;
+  animation: pulse 2.4s ease-in-out infinite;
 }
 
 @keyframes pulse {
-  0%   { box-shadow: 0 0 0 0 var(--accent-glow); }
-  70%  { box-shadow: 0 0 0 8px transparent; }
-  100% { box-shadow: 0 0 0 0 transparent; }
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.4; }
 }
 
 h1 {
-  font-size: 1.15rem;
-  font-weight: 800;
-  letter-spacing: 0.02em;
+  font-family: var(--font-display);
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
   margin: 0;
-  text-transform: uppercase;
+}
+
+.top-right {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding-top: 0.2rem;
 }
 
 .subtitle {
   font-family: var(--font-mono);
-  font-size: 0.78rem;
+  font-size: 0.75rem;
   color: var(--text-muted);
 }
 
-/* --- controls -------------------------------------------------------------- */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.1rem;
+  height: 2.1rem;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+}
+.icon-btn:hover { border-color: var(--text-muted); color: var(--text); background: var(--surface-raised); }
+
+/* --- tabs -------------------------------------------------------------------- */
+
+.tabs {
+  display: flex;
+  gap: 0.25rem;
+  margin-bottom: 1.75rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.tab {
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 0.6rem 0.2rem;
+  margin-right: 1.4rem;
+  cursor: pointer;
+}
+.tab:hover { color: var(--text); background: transparent; }
+.tab[aria-selected="true"] {
+  color: var(--accent-ink);
+  border-bottom-color: var(--accent);
+}
+
+.tab-panel { animation: panel-in 0.22s ease; }
+@keyframes panel-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* --- controls / form elements ------------------------------------------------ */
 
 .controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.6rem;
   margin-bottom: 1.25rem;
 }
 
-input[type=date], button, input[type=text], input[type=file] {
-  font-family: var(--font-mono);
+input[type=date], button, input[type=text], input[type=file], select {
+  font-family: var(--font-body);
   font-size: 0.85rem;
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   padding: 0.5rem 0.7rem;
 }
 
 button {
   cursor: pointer;
-  font-weight: 600;
-  transition: border-color 0.15s, color 0.15s;
+  font-weight: 500;
+  transition: background-color 0.12s, border-color 0.12s, color 0.12s;
 }
 
-button:hover { border-color: var(--accent); color: var(--accent); }
+button:hover { border-color: var(--text-muted); background: var(--surface-raised); }
+button:active { transform: translateY(1px); }
 
 button.primary {
   background: var(--accent);
-  color: #04140f;
-  border-color: var(--accent);
+  color: #fdfcf8;
+  border-color: var(--accent-ink);
 }
+button.primary:hover { background: var(--accent-ink); }
 
-button.primary:hover { color: #04140f; filter: brightness(1.08); }
-
-button:disabled { opacity: 0.5; cursor: default; }
+button:disabled { opacity: 0.5; cursor: default; transform: none; }
 
 #status {
   margin-left: auto;
@@ -158,34 +256,31 @@ button:disabled { opacity: 0.5; cursor: default; }
   color: var(--text-muted);
 }
 
-/* --- check-in list --------------------------------------------------------- */
+/* --- check-in feed: ruled register rows, not floating cards ------------------ */
 
 .feed {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  border-top: 1px solid var(--rule);
 }
 
 .row {
   display: grid;
-  grid-template-columns: 40px 1fr auto auto;
+  grid-template-columns: 38px 1fr auto auto;
   align-items: center;
   gap: 0.9rem;
-  padding: 0.6rem 0.75rem;
-  border-radius: 8px;
-  background: var(--surface);
+  padding: 0.65rem 0.25rem;
+  border-bottom: 1px solid var(--rule);
 }
 
 .row.fresh { animation: land 0.5s ease-out; }
 @keyframes land {
-  from { transform: translateY(-6px); opacity: 0; background: var(--accent-glow); }
-  to   { transform: translateY(0); opacity: 1; }
+  from { background: var(--accent-soft); }
+  to   { background: transparent; }
 }
 
 .avatar {
-  width: 40px;
-  height: 40px;
-  border-radius: 8px;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
   background: var(--surface-raised);
   border: 1px solid var(--border);
   object-fit: cover;
@@ -194,32 +289,30 @@ button:disabled { opacity: 0.5; cursor: default; }
   justify-content: center;
   font-family: var(--font-mono);
   font-weight: 600;
-  font-size: 0.85rem;
+  font-size: 0.75rem;
   color: var(--text-faint);
   overflow: hidden;
 }
 
 .avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.avatar img, .pending-card .thumb { cursor: zoom-in; transition: filter 0.15s; }
-.avatar img:hover, .pending-card .thumb:hover { filter: brightness(1.15); }
+.avatar img, .pending-card img.thumb { cursor: zoom-in; transition: filter 0.15s; }
+.avatar img:hover, .pending-card img.thumb:hover { filter: brightness(1.1); }
 
 .who { min-width: 0; }
-.who .name { font-weight: 600; font-size: 0.95rem; }
-.who .no { font-family: var(--font-mono); font-size: 0.72rem; color: var(--text-faint); }
+.who .name { font-family: var(--font-display); font-weight: 500; font-size: 1rem; }
+.who .no { font-family: var(--font-mono); font-size: 0.7rem; color: var(--text-faint); }
 
-.time { font-family: var(--font-mono); font-size: 0.85rem; color: var(--text-muted); white-space: nowrap; }
+.time { font-family: var(--font-mono); font-size: 0.82rem; color: var(--text-muted); white-space: nowrap; }
 
 .badge {
   font-family: var(--font-mono);
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   font-weight: 600;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-  padding: 0.25rem 0.55rem;
-  border-radius: 5px;
+  padding: 0.22rem 0.5rem;
+  border-radius: var(--radius);
   white-space: nowrap;
 }
-.badge.in  { background: var(--accent-dim); color: var(--accent); }
+.badge.in  { background: var(--accent-soft); color: var(--accent-ink); }
 .badge.out { background: transparent; color: var(--out); border: 1px solid var(--border); }
 
 .empty {
@@ -230,44 +323,61 @@ button:disabled { opacity: 0.5; cursor: default; }
   font-size: 0.85rem;
 }
 
-/* --- add worker ------------------------------------------------------------ */
+/* --- subsections (workers / settings-modal groupings) ------------------------ */
 
-section.panel {
-  margin-top: 3rem;
-  padding-top: 1.5rem;
-  border-top: 1px solid var(--border);
+.subsection {
+  margin-top: 2.25rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--rule);
+}
+.subsection:first-child { margin-top: 0; padding-top: 0; border-top: none; }
+
+.subsection h2 {
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0 0 0.6rem;
 }
 
-section.panel h2 {
-  font-size: 0.8rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-muted);
-  font-weight: 700;
-  margin: 0 0 1rem;
+.subsection h3 {
+  font-family: var(--font-display);
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--accent-ink);
+  margin: 0 0 0.75rem;
 }
 
 .panel-hint {
-  font-size: 0.82rem;
+  font-size: 0.85rem;
   color: var(--text-muted);
   margin: 0 0 1rem;
   max-width: 46em;
+  line-height: 1.5;
+}
+
+.hint-text {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-faint);
+  line-height: 1.5;
 }
 
 .enroll-msg {
   width: 100%;
   font-family: var(--font-mono);
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   padding: 0.5rem 0;
 }
-.enroll-msg.ok { color: var(--accent); }
+.enroll-msg.ok { color: var(--accent-ink); }
 .enroll-msg.err { color: var(--danger); }
 
-.pending-grid {
+/* --- worker / pending cards --------------------------------------------------- */
+
+.pending-grid, .worker-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 0.9rem;
-  margin-top: 1.25rem;
 }
 
 .pending-card {
@@ -283,10 +393,28 @@ section.panel h2 {
 .pending-card .thumb {
   width: 100%;
   aspect-ratio: 1;
-  border-radius: 6px;
+  border-radius: 2px;
   object-fit: cover;
   background: var(--surface-raised);
   border: 1px solid var(--border);
+}
+
+.pending-card .thumb-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.3rem;
+  color: var(--text-faint);
+  cursor: default;
+}
+
+.pending-card .no {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-faint);
+  text-align: center;
 }
 
 .pending-card input[type=text] {
@@ -309,61 +437,125 @@ section.panel h2 {
 
 .pending-card button.discard {
   color: var(--danger);
-  border-color: var(--danger-dim);
+  border-color: var(--danger-soft);
 }
-.pending-card button.discard:hover { border-color: var(--danger); color: var(--danger); }
+.pending-card button.discard:hover { border-color: var(--danger); background: var(--danger-soft); }
 
 .pending-card .pending-status {
   font-family: var(--font-mono);
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   min-height: 1em;
 }
-.pending-status.ok { color: var(--accent); }
+.pending-status.ok { color: var(--accent-ink); }
 .pending-status.err { color: var(--danger); }
 
-/* --- settings ---------------------------------------------------------------- */
+/* --- payroll table -------------------------------------------------------------- */
 
-.settings-row {
+.payroll-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1.25rem;
+  font-size: 0.88rem;
+}
+
+.payroll-table th {
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  padding: 0.5rem 0.6rem;
+  border-bottom: 2px solid var(--text);
+}
+
+.payroll-table td {
+  padding: 0.55rem 0.6rem;
+  border-bottom: 1px solid var(--rule);
+  font-family: var(--font-mono);
+}
+.payroll-table td:first-child { font-family: var(--font-body); }
+
+.payroll-table tr:last-child td { border-bottom: none; }
+
+.wage-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.wage-input-inline {
+  width: 5.5em;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.85rem;
+}
+
+.wage-cell .save-wage-btn {
+  width: 1.7rem;
+  height: 1.7rem;
+  flex-shrink: 0;
+}
+.wage-cell .save-wage-btn:hover { color: var(--accent-ink); border-color: var(--accent); }
+
+/* --- settings form rows (used inside the modal) -------------------------------- */
+
+.field-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0.6rem;
-  margin-bottom: 0.75rem;
+  margin-bottom: 0.7rem;
 }
 
-.settings-row label {
+.field-row label {
   font-size: 0.8rem;
   color: var(--text-muted);
-  font-family: var(--font-mono);
+  min-width: 11em;
 }
 
-.settings-row input[type=text] { flex: 0 1 220px; }
+.field-row input[type=text] { flex: 1 1 180px; }
+.input-narrow { flex: 0 1 110px !important; }
 
-.ip-mode {
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  color: var(--text-faint);
-}
+/* --- settings modal -------------------------------------------------------------- */
 
-button.danger {
-  color: var(--danger);
-  border-color: var(--danger-dim);
-}
-button.danger:hover { border-color: var(--danger); color: var(--danger); }
-
-#logView {
-  margin-top: 0.75rem;
-  max-height: 320px;
-  overflow: auto;
-  background: var(--surface);
+dialog#settingsModal {
+  width: min(560px, 92vw);
+  max-height: 85vh;
+  padding: 0;
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 0.75rem;
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 2px 0 var(--accent), 0 24px 48px -12px rgba(0, 0, 0, 0.35);
+}
+
+dialog#settingsModal[open] { animation: modal-in 0.18s cubic-bezier(0.16, 1, 0.3, 1); }
+@keyframes modal-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+dialog#settingsModal::backdrop {
+  background: rgba(26, 23, 18, 0.45);
+  backdrop-filter: blur(2px);
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.1rem 1.4rem;
+  border-bottom: 1px solid var(--rule);
+}
+.modal-head h2 {
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.modal-body {
+  padding: 1.1rem 1.4rem 1.4rem;
+  overflow-y: auto;
+  max-height: calc(85vh - 4.2rem);
 }
 
 /* --- photo lightbox --------------------------------------------------------- */
@@ -384,9 +576,9 @@ button.danger:hover { border-color: var(--danger); color: var(--danger); }
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(4, 8, 8, 0.82);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
+  background: rgba(26, 23, 18, 0.78);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
   cursor: zoom-out;
   opacity: 0;
   transition: opacity 0.22s ease;
@@ -397,8 +589,8 @@ button.danger:hover { border-color: var(--danger); color: var(--danger); }
 .lightbox img {
   max-width: min(90vw, 720px);
   max-height: 86vh;
-  border-radius: 14px;
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--border);
+  border-radius: 4px;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55);
   cursor: default;
   transform: scale(0.94) translateY(8px);
   transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
@@ -413,22 +605,23 @@ button.danger:hover { border-color: var(--danger); color: var(--danger); }
   width: 2.25rem;
   height: 2.25rem;
   border-radius: 50%;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--text);
+  border: 1px solid rgba(253, 252, 248, 0.3);
+  background: rgba(253, 252, 248, 0.1);
+  color: #fdfcf8;
   font-size: 1.3rem;
   line-height: 1;
   cursor: pointer;
-  transition: border-color 0.15s, color 0.15s, transform 0.15s;
+  transition: border-color 0.15s, background 0.15s, transform 0.15s;
 }
 
 .lightbox-close:hover {
-  border-color: var(--accent);
-  color: var(--accent);
+  border-color: #fdfcf8;
+  background: rgba(253, 252, 248, 0.2);
   transform: rotate(90deg);
 }
 
 @media (max-width: 560px) {
-  .row { grid-template-columns: 36px 1fr auto; }
+  .row { grid-template-columns: 32px 1fr auto; }
   .row .time { display: none; }
+  .field-row label { min-width: 100%; }
 }

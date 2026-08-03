@@ -12,10 +12,10 @@ const { resolveDeviceIp, forceRediscover } = require('./resolveDevice');
 const { getDeviceIp, hasDeviceIp } = require('./deviceState');
 const { setDeviceIpPersisted } = require('./settings');
 const { enrollEmployee } = require('./enroll');
+const { runBackup, BACKUP_DIR, BACKUP_INTERVAL_MS } = require('./backup');
 const logger = require('./logger');
 
 const PORT = Number(process.env.PORT || 3070);
-const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 5000);
 
 const app = express();
 app.use(express.json({ limit: '8mb' })); // generous enough for a base64-encoded enrollment photo
@@ -46,7 +46,14 @@ async function capturePhoto(row) {
 // --- read API for the dashboard ---------------------------------------------
 app.get('/api/checkins', (req, res) => {
   const { date, employeeNo, limit } = req.query;
-  res.json(db.listCheckins({ date, employeeNo, limit: limit ? Number(limit) : undefined }));
+  // A non-numeric ?limit (or anything else that doesn't parse to a finite,
+  // positive number) must fall back to listCheckins' own default rather
+  // than pass through as NaN — binding NaN to the SQL LIMIT throws a
+  // "datatype mismatch" that previously took the whole request down with a
+  // raw stack trace in the response.
+  const parsedLimit = Number(limit);
+  const safeLimit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : undefined;
+  res.json(db.listCheckins({ date, employeeNo, limit: safeLimit }));
 });
 
 app.get('/api/device', (req, res) => {
@@ -58,11 +65,17 @@ app.get('/api/stats', (req, res) => {
 });
 
 // --- settings ------------------------------------------------------------------
+// Everything here is meant to be changeable by whoever runs the site, from
+// the dashboard itself — no config file, no restart, no SSH/RDP needed.
 app.get('/api/settings', (req, res) => {
   res.json({
     deviceIp: hasDeviceIp() ? getDeviceIp() : null,
     deviceMac: process.env.DEVICE_MAC || null,
     autoDiscover: !process.env.DEVICE_IP,
+    siteName: db.getSetting('site_name', 'დასწრების ჟურნალი'),
+    currency: db.getSetting('currency', '₾'),
+    pollIntervalMs: db.getPollIntervalMs(),
+    debounceSeconds: db.getDebounceSeconds(),
   });
 });
 
@@ -74,6 +87,65 @@ app.post('/api/settings/device-ip', (req, res) => {
   setDeviceIpPersisted(ip.trim());
   logger.log(`[settings] device IP manually set to ${ip.trim()}`);
   res.json({ ok: true, deviceIp: ip.trim() });
+});
+
+app.post('/api/settings/app', (req, res) => {
+  const { siteName, currency, pollIntervalMs, debounceSeconds } = req.body || {};
+
+  if (siteName !== undefined) {
+    if (typeof siteName !== 'string' || !siteName.trim()) {
+      return res.status(400).json({ error: 'site name cannot be empty' });
+    }
+    db.setSetting('site_name', siteName.trim());
+  }
+  if (currency !== undefined) {
+    if (typeof currency !== 'string' || !currency.trim()) {
+      return res.status(400).json({ error: 'currency symbol cannot be empty' });
+    }
+    db.setSetting('currency', currency.trim());
+  }
+  if (pollIntervalMs !== undefined) {
+    const ms = Number(pollIntervalMs);
+    if (!Number.isFinite(ms) || ms < 250) {
+      return res.status(400).json({ error: 'poll interval must be at least 250ms' });
+    }
+    db.setSetting('poll_interval_ms', ms);
+    restartPolling();
+  }
+  if (debounceSeconds !== undefined) {
+    const secs = Number(debounceSeconds);
+    if (!Number.isFinite(secs) || secs < 0) {
+      return res.status(400).json({ error: 'debounce must be zero or a positive number of seconds' });
+    }
+    db.setSetting('debounce_seconds', secs);
+  }
+  logger.log('[settings] app settings updated');
+  res.json({
+    ok: true,
+    siteName: db.getSetting('site_name', 'დასწრების ჟურნალი'),
+    currency: db.getSetting('currency', '₾'),
+    pollIntervalMs: db.getPollIntervalMs(),
+    debounceSeconds: db.getDebounceSeconds(),
+  });
+});
+
+app.get('/api/backups', (req, res) => {
+  let files = [];
+  try {
+    files = fs.readdirSync(BACKUP_DIR)
+      .filter((f) => f.startsWith('attendance-') && f.endsWith('.db'))
+      .map((f) => {
+        const stat = fs.statSync(path.join(BACKUP_DIR, f));
+        return { file: f, bytes: stat.size, created_at: stat.mtime.toISOString() };
+      })
+      .sort((a, b) => b.created_at.localeCompare(a.created_at));
+  } catch { /* backups dir doesn't exist yet — none taken so far, empty list is correct */ }
+  res.json(files);
+});
+
+app.post('/api/backups', async (req, res) => {
+  await runBackup();
+  res.json({ ok: true });
 });
 
 app.get('/api/logs', (req, res) => {
@@ -97,14 +169,19 @@ app.delete('/api/checkins', (req, res) => {
 // primary UI flow — capture a face now (no name needed yet), then claim it
 // with a name later once whoever's in charge is free to go through them.
 app.post('/api/employees', async (req, res) => {
-  const { name, photoBase64 } = req.body || {};
+  const { name, photoBase64, dailyWage } = req.body || {};
   if (!name || typeof name !== 'string' || !name.trim()) {
     return res.status(400).json({ error: 'name is required' });
+  }
+  if (dailyWage !== undefined && dailyWage !== null &&
+      !(Number.isFinite(Number(dailyWage)) && Number(dailyWage) >= 0)) {
+    return res.status(400).json({ error: 'daily wage must be a non-negative number' });
   }
   try {
     const result = await enrollEmployee({
       name: name.trim(),
       jpegBuffer: photoBase64 ? Buffer.from(photoBase64, 'base64') : null,
+      dailyWage: dailyWage === undefined || dailyWage === null ? null : Number(dailyWage),
     });
     logger.log(`[enroll] added #${result.employeeNo} ${result.name}${result.photoWarning ? ` (photo rejected: ${result.photoWarning})` : ''}`);
     res.json(result);
@@ -132,16 +209,24 @@ app.get('/api/pending-workers', (req, res) => {
 
 app.post('/api/pending-workers/:id/claim', async (req, res) => {
   const id = Number(req.params.id);
-  const { name } = req.body || {};
+  const { name, dailyWage } = req.body || {};
   if (!name || typeof name !== 'string' || !name.trim()) {
     return res.status(400).json({ error: 'name is required' });
+  }
+  if (dailyWage !== undefined && dailyWage !== null &&
+      !(Number.isFinite(Number(dailyWage)) && Number(dailyWage) >= 0)) {
+    return res.status(400).json({ error: 'daily wage must be a non-negative number' });
   }
   const pending = db.getPendingWorker(id);
   if (!pending) return res.status(404).json({ error: 'no such pending capture' });
 
   try {
     const jpegBuffer = fs.readFileSync(path.join(SNAPSHOT_DIR, pending.picture_path));
-    const result = await enrollEmployee({ name: name.trim(), jpegBuffer });
+    const result = await enrollEmployee({
+      name: name.trim(),
+      jpegBuffer,
+      dailyWage: dailyWage === undefined || dailyWage === null ? null : Number(dailyWage),
+    });
     db.deletePendingWorker(id);
     deleteSnapshot(pending.picture_path);
     logger.log(`[enroll] claimed pending #${id} as #${result.employeeNo} ${result.name}${result.photoWarning ? ` (photo rejected: ${result.photoWarning})` : ''}`);
@@ -161,6 +246,98 @@ app.delete('/api/pending-workers/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+// --- worker management (list / rename / wage / remove) ------------------------
+app.get('/api/employees', (req, res) => {
+  res.json(db.listEmployees());
+});
+
+app.put('/api/employees/:employeeNo', async (req, res) => {
+  const { employeeNo } = req.params;
+  const { name, dailyWage } = req.body || {};
+  if (name !== undefined && (typeof name !== 'string' || !name.trim())) {
+    return res.status(400).json({ error: 'name cannot be empty' });
+  }
+  if (dailyWage !== undefined && dailyWage !== null &&
+      !(Number.isFinite(Number(dailyWage)) && Number(dailyWage) >= 0)) {
+    return res.status(400).json({ error: 'daily wage must be a non-negative number' });
+  }
+  const wage = dailyWage === undefined ? undefined : (dailyWage === null ? null : Number(dailyWage));
+  try {
+    if (name !== undefined) {
+      // Renaming touches the device too — modifyDeviceUser resets that
+      // user's valid-dates window on the device (fine, a minor cosmetic
+      // side effect), which is why this only runs when a name was actually
+      // given, not on every wage-only edit.
+      await deviceClient.modifyDeviceUser({ employeeNo, name: name.trim() });
+      db.upsertEmployee(employeeNo, name.trim(), wage);
+    } else if (wage !== undefined) {
+      // Wage-only edit — go through setEmployeeWage instead of
+      // upsertEmployee so the employee's name isn't touched at all.
+      db.setEmployeeWage(employeeNo, wage);
+    }
+    logger.log(`[employees] updated #${employeeNo}`);
+    res.json({ ok: true });
+  } catch (err) {
+    logger.error('employee update failed:', err.message);
+    res.status(502).json({ error: `could not update on terminal: ${err.message}` });
+  }
+});
+
+app.delete('/api/employees/:employeeNo', async (req, res) => {
+  const { employeeNo } = req.params;
+  try {
+    // Removes both the device user AND their enrolled face (the device
+    // treats a face as an attribute of the user, not a separate record) —
+    // there's no such thing as deleting "just the face" while keeping the
+    // user able to badge in.
+    await deviceClient.deleteDeviceUser(employeeNo);
+    db.deleteEmployeeLocal(employeeNo);
+    logger.log(`[employees] removed #${employeeNo} (and their face) from the terminal`);
+    res.json({ ok: true });
+  } catch (err) {
+    logger.error('employee delete failed:', err.message);
+    res.status(502).json({ error: `could not remove from terminal: ${err.message}` });
+  }
+});
+
+// --- payroll -------------------------------------------------------------------
+app.get('/api/payroll', (req, res) => {
+  const { start, end } = req.query;
+  if (!start || !end) {
+    return res.status(400).json({ error: 'start and end query params are required, e.g. ?start=2026-07-01&end=2026-07-31' });
+  }
+  res.json(db.payroll({ start, end }));
+});
+
+// --- CSV export ------------------------------------------------------------------
+function csvField(value) {
+  const s = value === null || value === undefined ? '' : String(value);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+function csvRow(fields) {
+  return fields.map(csvField).join(',');
+}
+
+app.get('/api/checkins/export', (req, res) => {
+  const { date, employeeNo } = req.query;
+  const rows = db.listCheckins({ date, employeeNo, limit: 1_000_000 });
+  const lines = ['employee_no,name,event_time,direction,verify_mode'];
+  for (const r of rows) lines.push(csvRow([r.employee_no, r.name, r.event_time, r.direction, r.verify_mode]));
+  const filename = `checkins${date ? `-${date}` : ''}.csv`;
+  res.type('text/csv').attachment(filename).send(lines.join('\n'));
+});
+
+app.get('/api/payroll/export', (req, res) => {
+  const { start, end } = req.query;
+  if (!start || !end) {
+    return res.status(400).json({ error: 'start and end query params are required' });
+  }
+  const rows = db.payroll({ start, end });
+  const lines = ['employee_no,name,days_present,daily_wage,total_pay'];
+  for (const r of rows) lines.push(csvRow([r.employee_no, r.name, r.days_present, r.daily_wage, r.total_pay]));
+  res.type('text/csv').attachment(`payroll-${start}_to_${end}.csv`).send(lines.join('\n'));
+});
+
 app.use('/snapshots', express.static(SNAPSHOT_DIR));
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
@@ -168,7 +345,14 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 async function syncEmployees() {
   try {
     const users = await deviceClient.fetchAllUsers();
+    const deviceNos = new Set(users.map((u) => String(u.employeeNo)));
     for (const u of users) db.upsertEmployee(u.employeeNo, u.name);
+    // Mirror the device's roster exactly — someone removed straight from
+    // the device (or a leftover row from before local deletion existed)
+    // shouldn't linger forever as a ghost entry in worker management.
+    for (const e of db.listEmployees()) {
+      if (!deviceNos.has(String(e.employee_no))) db.deleteEmployeeLocal(e.employee_no);
+    }
     logger.log(`synced ${users.length} employee(s) from the terminal`);
   } catch (err) {
     logger.error('employee sync failed (will retry):', err.message);
@@ -188,46 +372,62 @@ async function resolveDeviceWithRetry() {
   }
 }
 
+// Mutable so a poll-interval change from Settings (POST /api/settings/app)
+// can tear down the running interval and start a fresh one at the new
+// speed — no service restart needed for this to take effect.
+let pollTimer = null;
+let consecutiveFailures = 0;
+let rediscoveryInFlight = false;
+
+function onNewCheckin(row) {
+  // A repeat scan within the debounce window (someone unsure it registered,
+  // or the camera catching the same face twice) is the same session as the
+  // one already showing — listCheckins already folds it into that session
+  // for anyone who reloads, so update the existing displayed row in place
+  // (new time/photo) rather than either adding a duplicate row or leaving
+  // the live view showing stale data until the next manual refresh.
+  const isRepeat = row.employee_no && db.isSameSession(row.employee_no, row.event_time, row.id);
+  if (!isRepeat) {
+    broadcast({ type: 'checkin', row });
+    logger.log(`[checkin] ${row.name || row.employee_no} (${row.direction}) @ ${row.event_time}`);
+  } else {
+    broadcast({ type: 'session-update', row });
+    logger.log(`[checkin] ${row.name || row.employee_no} re-scanned within ${db.getDebounceSeconds()}s — updating in place, not spamming the feed`);
+  }
+  capturePhoto(row);
+}
+
+async function onPollError(err) {
+  if (!err) { consecutiveFailures = 0; return; }
+  consecutiveFailures += 1;
+  // If polling keeps failing for a sustained stretch (not just one blip —
+  // ~30s worth of consecutive failures at the current poll interval), the
+  // device may have moved to a new IP (DHCP lease change at a new site).
+  // Re-scan for it rather than staying stuck forever on a stale address.
+  const failureThreshold = Math.max(5, Math.round(30_000 / db.getPollIntervalMs()));
+  if (consecutiveFailures < failureThreshold || rediscoveryInFlight) return;
+  consecutiveFailures = 0;
+  rediscoveryInFlight = true;
+  try {
+    await forceRediscover();
+  } finally {
+    rediscoveryInFlight = false;
+  }
+}
+
+function restartPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  consecutiveFailures = 0;
+  pollTimer = startPolling(db.getPollIntervalMs(), onNewCheckin, onPollError);
+}
+
 server.listen(PORT, async () => {
   logger.log(`face-terminal listening on :${PORT}`);
   logger.log(`  dashboard   http://${process.env.RECEIVER_IP || 'localhost'}:${PORT}/`);
   await resolveDeviceWithRetry();
   syncEmployees();
   setInterval(syncEmployees, 30 * 60 * 1000); // every 30 min — catches renames/new hires
-  // If polling keeps failing for a sustained stretch (not just one blip —
-  // ~30s worth of consecutive failures at the current poll interval), the
-  // device may have moved to a new IP (DHCP lease change at a new site).
-  // Re-scan for it rather than staying stuck forever on a stale address.
-  const FAILURE_THRESHOLD = Math.max(5, Math.round(30_000 / POLL_INTERVAL_MS));
-  let consecutiveFailures = 0;
-  let rediscoveryInFlight = false;
-
-  startPolling(POLL_INTERVAL_MS, (row) => {
-    // A repeat scan within the debounce window (someone unsure it registered,
-    // or the camera catching the same face twice) is the same session as the
-    // one already showing — listCheckins already folds it into that session
-    // for anyone who reloads, so update the existing displayed row in place
-    // (new time/photo) rather than either adding a duplicate row or leaving
-    // the live view showing stale data until the next manual refresh.
-    const isRepeat = row.employee_no && db.isSameSession(row.employee_no, row.event_time, row.id);
-    if (!isRepeat) {
-      broadcast({ type: 'checkin', row });
-      logger.log(`[checkin] ${row.name || row.employee_no} (${row.direction}) @ ${row.event_time}`);
-    } else {
-      broadcast({ type: 'session-update', row });
-      logger.log(`[checkin] ${row.name || row.employee_no} re-scanned within ${db.DEBOUNCE_SECONDS}s — updating in place, not spamming the feed`);
-    }
-    capturePhoto(row);
-  }, async (err) => {
-    if (!err) { consecutiveFailures = 0; return; }
-    consecutiveFailures += 1;
-    if (consecutiveFailures < FAILURE_THRESHOLD || rediscoveryInFlight) return;
-    consecutiveFailures = 0;
-    rediscoveryInFlight = true;
-    try {
-      await forceRediscover();
-    } finally {
-      rediscoveryInFlight = false;
-    }
-  });
+  restartPolling();
+  runBackup(); // one backup right at startup, then on its own schedule below
+  setInterval(runBackup, BACKUP_INTERVAL_MS);
 });
