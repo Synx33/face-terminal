@@ -31,10 +31,34 @@ settingsModal.addEventListener('click', (e) => {
   if (e.target === settingsModal) settingsModal.close();
 });
 
-function todayLocal() {
-  const d = new Date();
+// Georgia is a fixed UTC+4, no DST. This dashboard runs on laptops that
+// move between networks/sites, and nothing guarantees whoever set the
+// laptop up ever changed its Windows timezone to Georgia — it defaults to
+// wherever it was originally configured. Computing "today" from the
+// browser's own local Date getters (getFullYear/getMonth/getDate) would
+// silently use whatever timezone THAT machine happens to have, which is
+// exactly the bug this had: it looked fine on a dev box that happens to
+// already be set to Asia/Tbilisi, and would only show wrong on a laptop set
+// to anything else. Fix: shift the absolute UTC instant by Georgia's fixed
+// offset and read UTC getters off the result — mirrors src/time.js's
+// georgiaNaive() exactly (no shared module between server and browser here).
+const GEORGIA_OFFSET_HOURS = 4;
+
+function georgiaParts(date) {
+  const shifted = new Date(date.getTime() + GEORGIA_OFFSET_HOURS * 3600_000);
   const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return {
+    year: shifted.getUTCFullYear(),
+    month: pad(shifted.getUTCMonth() + 1),
+    day: pad(shifted.getUTCDate()),
+    hour: pad(shifted.getUTCHours()),
+    minute: pad(shifted.getUTCMinutes()),
+  };
+}
+
+function todayLocal() {
+  const p = georgiaParts(new Date());
+  return `${p.year}-${p.month}-${p.day}`;
 }
 
 dateInput.value = todayLocal();
@@ -417,9 +441,8 @@ const payrollBody = document.getElementById('payrollBody');
 const payrollMsg = document.getElementById('payrollMsg');
 
 function defaultPayrollRange() {
-  const d = new Date();
-  const pad = (n) => String(n).padStart(2, '0');
-  const first = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-01`;
+  const p = georgiaParts(new Date());
+  const first = `${p.year}-${p.month}-01`;
   const today = todayLocal();
   return { first, today };
 }
@@ -606,12 +629,19 @@ function formatBytes(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+// toLocaleString() would format in the BROWSER's configured timezone —
+// same host-timezone trap as todayLocal() above. Georgia-anchor this too.
+function formatGeorgiaDateTime(isoString) {
+  const p = georgiaParts(new Date(isoString));
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
+}
+
 async function loadBackups() {
   const res = await fetch('/api/backups');
   const backups = await res.json();
   if (!backups.length) { backupList.textContent = 'სარეზერვო ასლი ჯერ არ არის შექმნილი.'; return; }
   const latest = backups[0];
-  backupList.textContent = `ინახება ${backups.length} ასლი · ბოლო: ${new Date(latest.created_at).toLocaleString()} (${formatBytes(latest.bytes)})`;
+  backupList.textContent = `ინახება ${backups.length} ასლი · ბოლო: ${formatGeorgiaDateTime(latest.created_at)} (${formatBytes(latest.bytes)})`;
 }
 
 document.getElementById('backupNowBtn').addEventListener('click', async () => {
