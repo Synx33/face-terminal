@@ -394,14 +394,19 @@ async function syncEmployees() {
   }
   try {
     const users = await deviceClient.fetchAllUsers();
-    const deviceNos = new Set(users.map((u) => String(u.employeeNo)));
     for (const u of users) db.upsertEmployee(u.employeeNo, u.name);
-    // Mirror the device's roster exactly — someone removed straight from
-    // the device (or a leftover row from before local deletion existed)
-    // shouldn't linger forever as a ghost entry in worker management.
-    for (const e of db.listEmployees()) {
-      if (!deviceNos.has(String(e.employee_no))) db.deleteEmployeeLocal(e.employee_no);
-    }
+    // Deliberately add/update-only, never delete here. This used to also
+    // remove any local row missing from the device's current roster — but
+    // that meant a factory reset, a swapped-in replacement unit, a device
+    // hiccup returning a short list, or someone deleting a user directly on
+    // the terminal (bypassing the dashboard) would silently wipe that
+    // person's locally-stored daily wage and drop them from all future
+    // payroll output, with nobody asked and nothing to undo it. Wage data
+    // exists ONLY in this local DB, never on the device, so it must never
+    // be an automatic side effect of a background sync. The only way to
+    // remove a worker now is the explicit Remove button in Worker
+    // Management, which touches both the device and the local record
+    // together, deliberately, with a confirmation.
     logger.log(`synced ${users.length} employee(s) from the terminal`);
   } catch (err) {
     logger.error('employee sync failed (will retry):', err.message);
@@ -473,10 +478,19 @@ function restartPolling() {
 server.listen(PORT, async () => {
   logger.log(`face-terminal listening on :${PORT}`);
   logger.log(`  dashboard   http://${process.env.RECEIVER_IP || 'localhost'}:${PORT}/`);
+
+  // Backups only ever touch the local SQLite file — they must never be
+  // gated on the device being reachable. This used to run AFTER
+  // resolveDeviceWithRetry(), which retries forever every 15s while the
+  // terminal is offline — meaning if the service happened to start (or
+  // restart) while the device was unreachable, backups silently never ran
+  // at all until it came back, for a reason that had nothing to do with
+  // what's actually being backed up. Start this immediately instead.
+  runBackup();
+  setInterval(runBackup, BACKUP_INTERVAL_MS);
+
   await resolveDeviceWithRetry();
   syncEmployees();
   setInterval(syncEmployees, 30 * 60 * 1000); // every 30 min — catches renames/new hires
   restartPolling();
-  runBackup(); // one backup right at startup, then on its own schedule below
-  setInterval(runBackup, BACKUP_INTERVAL_MS);
 });
