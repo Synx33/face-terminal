@@ -36,9 +36,9 @@ window (the original window can be closed).
 This registers `face-terminal` as a Windows service (auto-starts on boot,
 survives reboots and power loss, and restarts itself automatically if it
 ever crashes), opens the firewall for port 3070, and starts it. It also
-takes a database backup right away and daily after that (kept in
-`data\backups\`, last 14 days). When it finishes you'll see the dashboard
-URL to open in a browser.
+backs up the database and worker photos right away and every 10 minutes
+after that (kept in `data\backups\`). When it finishes you'll see the
+dashboard URL to open in a browser.
 
 Customize with parameters if needed:
 ```powershell
@@ -94,7 +94,7 @@ Or as a systemd service — see `face-terminal.service` for the unit file
 | `DEVICE_USER` / `DEVICE_PASS` | Terminal's admin login (ISAPI digest auth). |
 | `PORT` | Dashboard port (default 3070). |
 | `POLL_INTERVAL_MS` | Initial poll interval (default 1500ms) — overridable live from Settings afterward, which takes precedence once set. |
-| `CHECKIN_DEBOUNCE_SECONDS` | Initial debounce window (default 60s) — same as above, overridable live from Settings. |
+| `CHECKOUT_AFTER` | Initial checkout-time boundary, "HH:MM" 24h (default 19:00) — same as above, overridable live from Settings. |
 | `RECEIVER_IP` | Hostname/IP shown in the startup log line for the dashboard URL (cosmetic only). |
 | `FACE_TERMINAL_DATA` | Where the SQLite DB, snapshots, backups, and log file live. |
 
@@ -109,9 +109,11 @@ The dashboard is organized into three tabs — **ჩანაწერები*
   in/out with a photo, in real time. Filterable by date and by worker;
   exports to CSV.
 - **Check-in/check-out** — this terminal has no in/out mode selector, so
-  direction is derived: 1st scan of the day for a person is "in", 2nd is
-  "out", and so on. Repeat scans within a debounce window (customizable,
-  default 60s) collapse into one session instead of spamming the feed.
+  direction is derived from time of day: any scan before the configured
+  checkout time (default 19:00) is "in", the first scan at or after it is
+  "out". Any further scans that day on the same side of that boundary are
+  ignored entirely — walking past the camera again at lunch doesn't create
+  a new row or change the displayed time, only crossing the boundary does.
 - **Add worker** — capture a face photo first (no name needed), assign a
   name and (optionally) a daily wage whenever whoever's in charge has a
   moment. Creates the user and uploads the face on the actual device.
@@ -123,14 +125,17 @@ The dashboard is organized into three tabs — **ჩანაწერები*
   present × their daily wage (a day counts once no matter how many times
   they scanned it). The daily wage is editable right from the payroll table
   too, not only from the Workers tab. Exports to CSV.
-- **Settings** — site name, currency symbol, poll interval, and debounce
-  window are all live-editable, no restart needed. Also: pin/change the
-  device IP, clear check-in history, view/clear the log, and trigger or
-  review database backups — all without touching a config file or SSH/RDP.
-- **Automatic backups** — a full database backup runs at startup and every
-  24h after, keeping the last 14 dated copies in `data/backups/` (uses
-  `node:sqlite`'s own online-backup API, safe even while the live DB is
-  being written to).
+- **Settings** — site name, currency symbol, poll interval, and the
+  checkout-time boundary are all live-editable, no restart needed. Also:
+  pin/change the device IP and credentials, clear check-in history,
+  view/clear the log, and trigger or review database backups — all without
+  touching a config file or SSH/RDP.
+- **Automatic backups** — runs at startup and every 10 minutes after,
+  covering both the database (via `node:sqlite`'s own online-backup API,
+  safe even while the live DB is being written to) and every worker photo
+  (mirrored incrementally into `data/backups/snapshots/` — never deletes a
+  backed-up photo even if the original is removed). Every backup from the
+  last 24h is kept as-is; beyond that, one per day survives for 30 days.
 
 ### Why polling, not the terminal's push notifications
 

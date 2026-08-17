@@ -34,7 +34,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string] $DevicePass,
     [int]    $PollIntervalMs = 1500,
-    [int]    $CheckinDebounceSeconds = 60
+    [string] $CheckoutAfter = "19:00"
 )
 
 $ErrorActionPreference = "Stop"
@@ -211,7 +211,7 @@ DEVICE_PASS=$DevicePass
 PORT=$Port
 FACE_TERMINAL_DATA=$DataPath\data
 POLL_INTERVAL_MS=$PollIntervalMs
-CHECKIN_DEBOUNCE_SECONDS=$CheckinDebounceSeconds
+CHECKOUT_AFTER=$CheckoutAfter
 
 RECEIVER_IP=$ListenHost
 "@ | Set-Content -Path $envPath -Encoding UTF8

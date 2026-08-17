@@ -17,7 +17,7 @@ db.exec(`
 
   -- Free-form key/value store for anything the client should be able to
   -- customize from the dashboard (site name, currency, poll interval,
-  -- debounce window, ...) without editing .env or restarting anything.
+  -- checkout-time boundary, ...) without editing .env or restarting anything.
   CREATE TABLE IF NOT EXISTS app_settings (
     key   TEXT PRIMARY KEY,
     value TEXT
@@ -120,8 +120,14 @@ function setSetting(key, value) {
   `).run(key, String(value));
 }
 
-function getDebounceSeconds() {
-  return Number(getSetting('debounce_seconds', process.env.CHECKIN_DEBOUNCE_SECONDS || 60));
+// "HH:MM" 24-hour boundary — scans before this are the day's "in", scans at
+// or after it are "out". Kept as a zero-padded string (not minutes-since-
+// midnight or similar) specifically so it can be compared directly against
+// the "HH:MM" slice of a stored event_time with a plain string comparison
+// ("09:00" < "18:30" < "23:59" sorts correctly character-by-character for
+// same-length zero-padded values) -- no time-of-day math needed anywhere.
+function getCheckoutAfter() {
+  return getSetting('checkout_after', process.env.CHECKOUT_AFTER || '19:00');
 }
 
 function getPollIntervalMs() {
@@ -134,7 +140,7 @@ const insertCheckinStmt = db.prepare(`
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
-/** Returns true if a new row was inserted (false if it was a duplicate serialNo). */
+/** Returns the new row's id, or null if it was a duplicate serialNo (nothing inserted). */
 function insertCheckin(ev, source) {
   const name = ev.name || employeeName(ev.employeeNo);
   const result = insertCheckinStmt.run(
@@ -150,7 +156,7 @@ function insertCheckin(ev, source) {
     source,
     ev.raw ?? null,
   );
-  return result.changes > 0;
+  return result.changes > 0 ? Number(result.lastInsertRowid) : null;
 }
 
 const setPictureStmt = db.prepare('UPDATE checkins SET picture_path = ? WHERE id = ?');
@@ -166,19 +172,26 @@ function getCheckinById(id) {
   `).get(id);
 }
 
-// A face terminal gets scanned more than once per actual visit — someone
-// unsure if it registered scans again, or the camera catches the same face
-// twice in quick succession. Treated naively (every scan flips in/out),
-// that turns one real visit into a spurious in/out/in flicker. Instead,
-// scans by the same employee within the debounce window of each other
-// collapse into a single "session": only a gap bigger than the threshold
-// starts a new one, and direction alternates per session, not per raw scan.
-// Every raw scan still gets its own row in the table (nothing is
-// discarded), this only affects how they're grouped/labeled for display.
-// The window itself is customizable live from Settings (getDebounceSeconds
-// above), so it's read fresh on every call rather than frozen at startup.
+// Direction (check-in/check-out) isn't a device concept on this terminal --
+// it's a single reader with no in/out mode selector. Derived by wall-clock
+// time instead of scan order: every scan before the configured
+// getCheckoutAfter() boundary (default 19:00) is "in", everything at or
+// after it is "out". A person can walk past the camera any number of times
+// during the day -- lunch, stepping out, whatever -- and every one of those
+// scans stays labeled "in" and collapses into the SAME displayed row, not a
+// new one; only the first scan at or after the boundary starts the "out"
+// row. This deliberately replaced an earlier short-gap "debounce" design
+// (same employee within N seconds = same session): that only caught
+// near-simultaneous double-scans, not "recognized again three hours
+// later", which is the actual all-day case this app needs to handle.
+//
+// The representative row for each (employee, day, in/out) group is always
+// the EARLIEST scan in it (MIN(id)), not the latest -- the displayed time
+// is "when they arrived" / "when they first left", and must stay fixed as
+// more same-period scans come in, not drift forward to whatever the most
+// recent walk-by happened to be.
 
-/** Most recent OTHER checkin for this employee strictly before the given time — used to decide if a new scan starts a new session or continues one. */
+/** Most recent OTHER checkin for this employee strictly before the given time -- used to decide if a new scan is still within the same in/out period as the last one. */
 function priorCheckinForEmployee(employeeNo, beforeEventTime, excludeId) {
   if (!employeeNo) return null;
   return db.prepare(`
@@ -188,23 +201,19 @@ function priorCheckinForEmployee(employeeNo, beforeEventTime, excludeId) {
   `).get(String(employeeNo), beforeEventTime, excludeId);
 }
 
-/** True if this scan is close enough to the employee's previous one to be the same session (not a fresh check-in/out). */
+function periodOf(eventTime, boundary) {
+  return eventTime.slice(11, 16) < boundary ? 'in' : 'out';
+}
+
+/** True if this scan falls in the same day + in/out period as the employee's previous scan (nothing new to show -- still the same visit). */
 function isSameSession(employeeNo, eventTime, excludeId) {
   const prior = priorCheckinForEmployee(employeeNo, eventTime, excludeId);
   if (!prior) return false;
-  const gapSeconds = (new Date(eventTime) - new Date(prior.event_time)) / 1000;
-  return gapSeconds >= 0 && gapSeconds <= getDebounceSeconds();
+  if (eventTime.slice(0, 10) !== prior.event_time.slice(0, 10)) return false; // different calendar day
+  const boundary = getCheckoutAfter();
+  return periodOf(eventTime, boundary) === periodOf(prior.event_time, boundary);
 }
 
-// Direction (check-in/check-out) isn't a device concept on this terminal —
-// it's a single reader with no in/out mode selector, so we derive it: the
-// 1st *session* of a given day for a given employee is "in", the 2nd is
-// "out", and so on — where a session absorbs any repeat scans within
-// DEBOUNCE_SECONDS. Each displayed row represents one session (the most
-// recent scan in it, via SQLite's min/max "bare column" behavior — grouping
-// by MAX(id) pulls every other column from that same row). Computed at
-// query time via window functions, never stored, so it never needs a
-// backfill/migration when the logic changes.
 function listCheckins({ date, employeeNo, limit = 200 } = {}) {
   let sql = `
     WITH scoped AS (
@@ -222,43 +231,26 @@ function listCheckins({ date, employeeNo, limit = 200 } = {}) {
   }
   sql += `
     ),
-    lagged AS (
+    labeled AS (
       SELECT *,
-        LAG(event_time) OVER (
-          PARTITION BY employee_no, substr(event_time, 1, 10)
-          ORDER BY event_time
-        ) AS prev_time
+        CASE WHEN employee_no IS NULL THEN NULL
+             WHEN substr(event_time, 12, 5) < ? THEN 'in'
+             ELSE 'out'
+        END AS direction
       FROM scoped
-    ),
-    sessioned AS (
-      SELECT *,
-        CASE WHEN employee_no IS NULL THEN NULL ELSE
-          SUM(
-            CASE
-              WHEN prev_time IS NULL THEN 1
-              WHEN (julianday(event_time) - julianday(prev_time)) * 86400.0 > ? THEN 1
-              ELSE 0
-            END
-          ) OVER (
-            PARTITION BY employee_no, substr(event_time, 1, 10)
-            ORDER BY event_time
-          )
-        END AS session_no
-      FROM lagged
     )
     SELECT
-      MAX(id) AS id, serial_no, event_time, received_at, employee_no, name, verify_mode, door_no, source, picture_path,
-      CASE WHEN employee_no IS NULL THEN NULL
-           WHEN session_no % 2 = 1 THEN 'in' ELSE 'out' END AS direction
-    FROM sessioned
-    -- COALESCE(session_no, id): rows with no employee_no have a NULL
-    -- session_no, which would otherwise group every such row on the same
-    -- day into one — falling back to the row's own (unique) id keeps them
+      MIN(id) AS id, serial_no, event_time, received_at, employee_no, name, verify_mode, door_no, source, picture_path,
+      direction
+    FROM labeled
+    -- COALESCE(direction, id): rows with no employee_no have a NULL
+    -- direction, which would otherwise group every such row on the same
+    -- day into one -- falling back to the row's own (unique) id keeps them
     -- ungrouped instead.
-    GROUP BY employee_no, substr(event_time, 1, 10), COALESCE(session_no, id)
+    GROUP BY employee_no, substr(event_time, 1, 10), COALESCE(direction, id)
     ORDER BY event_time DESC LIMIT ?
   `;
-  params.push(getDebounceSeconds(), limit);
+  params.push(getCheckoutAfter(), limit);
   return db.prepare(sql).all(...params);
 }
 
@@ -316,7 +308,7 @@ function payroll({ start, end }) {
 
 module.exports = {
   db, upsertEmployee, employeeName, insertCheckin, listCheckins, stats, clearCheckins, DB_PATH,
-  setCheckinPicture, getCheckinById, isSameSession, getDebounceSeconds, getPollIntervalMs,
+  setCheckinPicture, getCheckinById, isSameSession, periodOf, getCheckoutAfter, getPollIntervalMs,
   insertPendingWorker, listPendingWorkers, getPendingWorker, deletePendingWorker,
   listEmployees, setEmployeeWage, deleteEmployeeLocal, getSetting, setSetting, payroll,
 };

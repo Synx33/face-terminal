@@ -56,10 +56,9 @@ async function pollOnce(onNewCheckin) {
   for (const info of infoList) {
     const parsed = parseJsonEvent(info);
     if (!isCheckin(parsed)) continue;
-    const inserted = db.insertCheckin(parsed, 'poll');
-    if (inserted && onNewCheckin) {
-      const row = db.listCheckins({ limit: 1 })[0];
-      onNewCheckin(row);
+    const insertedId = db.insertCheckin(parsed, 'poll');
+    if (insertedId && onNewCheckin) {
+      onNewCheckin(insertedId);
     }
   }
 }

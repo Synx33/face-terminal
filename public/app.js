@@ -152,30 +152,6 @@ function applyPhoto(id, picturePath) {
   row.querySelector('.avatar').innerHTML = `<img src="/snapshots/${picturePath}" alt="" loading="lazy" />`;
 }
 
-// A repeat scan within the debounce window continues the session already
-// shown for this employee rather than adding a new row — update that row's
-// time/id in place (its `id` has to move to the new one so a later `photo`
-// broadcast for this scan, keyed by id, can still find it) so the live view
-// never drifts from what a fresh page load of the same data would show.
-function applySessionUpdate(row) {
-  if (!row.employee_no) return;
-  const existing = rowsEl.querySelector(`.row[data-employee="${row.employee_no}"]`);
-  if (!existing) {
-    // Nothing currently shown for them (e.g. just switched dates) — treat as new.
-    if (row.event_time && row.event_time.startsWith(dateInput.value)) {
-      rowsEl.insertBefore(renderRow(row, true), rowsEl.firstChild);
-      emptyMsg.hidden = true;
-    }
-    return;
-  }
-  existing.dataset.id = row.id;
-  const timeEl = existing.querySelector('.time');
-  if (timeEl) timeEl.textContent = timeOnly(row.event_time);
-  existing.classList.remove('fresh');
-  void existing.offsetWidth; // restart the flash animation
-  existing.classList.add('fresh');
-}
-
 // A live scan should only land in the feed if it matches whatever the
 // dashboard is currently narrowed to — the right day, and (if a worker
 // filter is active) that specific worker. Otherwise a scan from someone
@@ -198,9 +174,6 @@ function connectLive() {
       if (!matchesCurrentFilter(row)) return;
       rowsEl.insertBefore(renderRow(row, true), rowsEl.firstChild);
       emptyMsg.hidden = true;
-    } else if (data.type === 'session-update') {
-      if (!matchesCurrentFilter(data.row)) return;
-      applySessionUpdate(data.row);
     } else if (data.type === 'photo') {
       applyPhoto(data.id, data.picture_path);
     }
@@ -557,7 +530,7 @@ const credsMsg = document.getElementById('credsMsg');
 const siteNameInput = document.getElementById('siteNameInput');
 const currencyInput = document.getElementById('currencyInput');
 const pollIntervalInput = document.getElementById('pollIntervalInput');
-const debounceInput = document.getElementById('debounceInput');
+const checkoutAfterInput = document.getElementById('checkoutAfterInput');
 const appSettingsMsg = document.getElementById('appSettingsMsg');
 
 function applySiteName(name) {
@@ -576,22 +549,24 @@ async function loadSettings() {
   siteNameInput.value = s.siteName;
   currencyInput.value = s.currency;
   pollIntervalInput.value = s.pollIntervalMs;
-  debounceInput.value = s.debounceSeconds;
+  checkoutAfterInput.value = s.checkoutAfter;
   currencySymbol = s.currency;
   applySiteName(s.siteName);
 }
 
+const CHECKOUT_AFTER_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
 document.getElementById('saveAppSettingsBtn').addEventListener('click', async () => {
   const pollIntervalMs = Number(pollIntervalInput.value);
-  const debounceSeconds = Number(debounceInput.value);
+  const checkoutAfter = checkoutAfterInput.value.trim();
   if (!Number.isFinite(pollIntervalMs) || pollIntervalMs < 250) {
     appSettingsMsg.className = 'enroll-msg err';
     appSettingsMsg.textContent = 'შემოწმების ინტერვალი უნდა იყოს მინიმუმ 250 მწმ';
     return;
   }
-  if (!Number.isFinite(debounceSeconds) || debounceSeconds < 0) {
+  if (!CHECKOUT_AFTER_RE.test(checkoutAfter)) {
     appSettingsMsg.className = 'enroll-msg err';
-    appSettingsMsg.textContent = 'გამეორების ინტერვალი უნდა იყოს ნული ან დადებითი რიცხვი (წამებში)';
+    appSettingsMsg.textContent = 'გასვლის დრო უნდა იყოს სთ:წთ ფორმატში, მაგ. 19:00';
     return;
   }
   appSettingsMsg.className = 'enroll-msg';
@@ -604,7 +579,7 @@ document.getElementById('saveAppSettingsBtn').addEventListener('click', async ()
         siteName: siteNameInput.value.trim() || 'დასწრების ჟურნალი',
         currency: currencyInput.value.trim() || '₾',
         pollIntervalMs,
-        debounceSeconds,
+        checkoutAfter,
       }),
     });
     const result = await res.json();

@@ -92,7 +92,7 @@ app.get('/api/settings', (req, res) => {
     siteName: db.getSetting('site_name', 'დასწრების ჟურნალი'),
     currency: db.getSetting('currency', '₾'),
     pollIntervalMs: db.getPollIntervalMs(),
-    debounceSeconds: db.getDebounceSeconds(),
+    checkoutAfter: db.getCheckoutAfter(),
   });
 });
 
@@ -126,7 +126,7 @@ app.post('/api/settings/device-credentials', (req, res) => {
 });
 
 app.post('/api/settings/app', (req, res) => {
-  const { siteName, currency, pollIntervalMs, debounceSeconds } = req.body || {};
+  const { siteName, currency, pollIntervalMs, checkoutAfter } = req.body || {};
 
   if (siteName !== undefined) {
     if (typeof siteName !== 'string' || !siteName.trim()) {
@@ -148,12 +148,11 @@ app.post('/api/settings/app', (req, res) => {
     db.setSetting('poll_interval_ms', ms);
     restartPolling();
   }
-  if (debounceSeconds !== undefined) {
-    const secs = Number(debounceSeconds);
-    if (!Number.isFinite(secs) || secs < 0) {
-      return res.status(400).json({ error: 'debounce must be zero or a positive number of seconds' });
+  if (checkoutAfter !== undefined) {
+    if (typeof checkoutAfter !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(checkoutAfter)) {
+      return res.status(400).json({ error: 'checkout time must be in HH:MM 24-hour format, e.g. 19:00' });
     }
-    db.setSetting('debounce_seconds', secs);
+    db.setSetting('checkout_after', checkoutAfter);
   }
   logger.log('[settings] app settings updated');
   res.json({
@@ -161,7 +160,7 @@ app.post('/api/settings/app', (req, res) => {
     siteName: db.getSetting('site_name', 'დასწრების ჟურნალი'),
     currency: db.getSetting('currency', '₾'),
     pollIntervalMs: db.getPollIntervalMs(),
-    debounceSeconds: db.getDebounceSeconds(),
+    checkoutAfter: db.getCheckoutAfter(),
   });
 });
 
@@ -433,21 +432,32 @@ let pollTimer = null;
 let consecutiveFailures = 0;
 let rediscoveryInFlight = false;
 
-function onNewCheckin(row) {
-  // A repeat scan within the debounce window (someone unsure it registered,
-  // or the camera catching the same face twice) is the same session as the
-  // one already showing — listCheckins already folds it into that session
-  // for anyone who reloads, so update the existing displayed row in place
-  // (new time/photo) rather than either adding a duplicate row or leaving
-  // the live view showing stale data until the next manual refresh.
-  const isRepeat = row.employee_no && db.isSameSession(row.employee_no, row.event_time, row.id);
-  if (!isRepeat) {
-    broadcast({ type: 'checkin', row });
-    logger.log(`[checkin] ${row.name || row.employee_no} (${row.direction}) @ ${row.event_time}`);
-  } else {
-    broadcast({ type: 'session-update', row });
-    logger.log(`[checkin] ${row.name || row.employee_no} re-scanned within ${db.getDebounceSeconds()}s — updating in place, not spamming the feed`);
+function onNewCheckin(insertedId) {
+  const inserted = db.getCheckinById(insertedId);
+  if (!inserted) return; // shouldn't happen, but don't crash on a stale/bad id
+
+  // A scan while already checked in/out for this same period (same day,
+  // same side of the checkout-time boundary) is fully ignored for display:
+  // no broadcast, no photo capture, the feed doesn't change at all — this
+  // is deliberate ("it doesn't detect it anymore until 19:00"), not a bug.
+  // Checked against the row that was ACTUALLY just inserted (its own id +
+  // event_time), not the period's representative row — using the
+  // representative here would always compare a row against itself and
+  // never detect a repeat.
+  const isRepeat = inserted.employee_no && db.isSameSession(inserted.employee_no, inserted.event_time, inserted.id);
+  if (isRepeat) {
+    const direction = db.periodOf(inserted.event_time, db.getCheckoutAfter());
+    logger.log(`[checkin] ${inserted.name || inserted.employee_no} scanned again while already checked ${direction} today — ignored until the period changes`);
+    return;
   }
+
+  // Not a repeat means this scan started a new period, so it IS the
+  // representative (earliest) row of its (employee, day, direction) group —
+  // re-fetch through listCheckins() to get the computed `direction` field
+  // for the broadcast payload/log line.
+  const row = db.listCheckins({ limit: 1 })[0];
+  broadcast({ type: 'checkin', row });
+  logger.log(`[checkin] ${row.name || row.employee_no} (${row.direction}) @ ${row.event_time}`);
   capturePhoto(row);
 }
 
