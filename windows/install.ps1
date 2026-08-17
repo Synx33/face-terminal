@@ -12,7 +12,7 @@
 #   service name:  face-terminal
 #   port:          3070
 #   device IP:     blank (auto-discovered by MAC on whatever network this
-#                  laptop is on — pass -DeviceIp only if you want to skip
+#                  laptop is on -- pass -DeviceIp only if you want to skip
 #                  discovery and pin it directly)
 #
 # Override any of the above with parameters:
@@ -28,7 +28,7 @@ param(
     [string] $DeviceIp    = "",
     [string] $DeviceMac   = "BC:9B:5E:1A:1D:87",
     [string] $DeviceUser  = "admin",
-    # No default on purpose — this is a real credential for a physical
+    # No default on purpose -- this is a real credential for a physical
     # access-control device, never hardcode it in a script that lives in
     # git history. Pass it explicitly: .\install.ps1 -DevicePass "..."
     [Parameter(Mandatory = $true)]
@@ -49,25 +49,25 @@ function Test-Admin {
 # C:\Program Files all require admin rights. Rather than just erroring out
 # and telling whoever's running this to go reopen PowerShell as admin
 # themselves, re-launch this exact script (same parameters) in a new,
-# elevated PowerShell — Windows pops the standard UAC "Do you want to allow
+# elevated PowerShell -- Windows pops the standard UAC "Do you want to allow
 # this app to make changes" prompt, they click Yes, and installation
 # continues there. This process then exits since the elevated copy is doing
 # the real work.
 # $BoundParams must be passed in explicitly as the script's own
-# $PSBoundParameters — a function has its own (separate, and here empty)
+# $PSBoundParameters -- a function has its own (separate, and here empty)
 # $PSBoundParameters scope, it does not inherit the caller's automatically.
 function Assert-Admin-OrElevate {
     param([hashtable] $BoundParams)
     if (Test-Admin) { return }
 
-    Write-Host "==> not running elevated — relaunching as Administrator (a Windows UAC prompt will appear)"
+    Write-Host "==> not running elevated -- relaunching as Administrator (a Windows UAC prompt will appear)"
     $scriptPath = $PSCommandPath
 
     $argList = @("-NoExit", "-ExecutionPolicy", "Bypass", "-File", "`"$scriptPath`"")
     foreach ($key in $BoundParams.Keys) {
         $value = $BoundParams[$key]
         # -Verb RunAs launches via ShellExecute, which takes one flat command
-        # line (not an argv array) — Start-Process just space-joins whatever
+        # line (not an argv array) -- Start-Process just space-joins whatever
         # we hand it, so each value needs its own quotes here, and a literal
         # " inside a value (e.g. a device password) would break that quoting
         # silently. Fail loudly instead of mis-parsing the relaunch.
@@ -81,14 +81,14 @@ function Assert-Admin-OrElevate {
     try {
         Start-Process -FilePath "powershell.exe" -ArgumentList $argList -Verb RunAs | Out-Null
     } catch {
-        throw "Elevation was cancelled or failed ($($_.Exception.Message)). This installer needs Administrator rights to register a Windows service and open a firewall port — run it again and accept the UAC prompt, or open PowerShell as Administrator yourself first."
+        throw "Elevation was cancelled or failed ($($_.Exception.Message)). This installer needs Administrator rights to register a Windows service and open a firewall port -- run it again and accept the UAC prompt, or open PowerShell as Administrator yourself first."
     }
-    Write-Host "==> continuing in the elevated window that just opened — this one can be closed"
+    Write-Host "==> continuing in the elevated window that just opened -- this one can be closed"
     exit 0
 }
 
 # Runs a node:sqlite smoke test and reports success/failure purely via exit
-# code — never trust a version-number cutoff for this. The exact Node
+# code -- never trust a version-number cutoff for this. The exact Node
 # version where node:sqlite went from "needs --experimental-sqlite" to
 # unflagged isn't something to guess from memory, and passing an
 # unrecognized flag to node is a hard startup error, so this has to be
@@ -121,7 +121,7 @@ function Assert-Node {
         return [PSCustomObject]@{ Path = $nodePath; NeedsSqliteFlag = $false }
     }
     if (Test-NodeSqlite -NodePath $nodePath -ExtraArgs @("--experimental-sqlite")) {
-        Write-Host "==> node:sqlite needs --experimental-sqlite on this Node version — will add it to the service"
+        Write-Host "==> node:sqlite needs --experimental-sqlite on this Node version -- will add it to the service"
         return [PSCustomObject]@{ Path = $nodePath; NeedsSqliteFlag = $true }
     }
     throw "Node.js $version doesn't support node:sqlite (tried with and without --experimental-sqlite). This app needs it. Install the latest Node.js LTS:`n  winget install -e --id OpenJS.NodeJS.LTS`nThen close this PowerShell window, open a new one, and re-run this installer."
@@ -134,7 +134,7 @@ function Ensure-NSSM {
         Write-Host "==> nssm already present at $nssmExe"
         return $nssmExe
     }
-    Write-Host "==> downloading NSSM (Non-Sucking Service Manager) — needs internet access"
+    Write-Host "==> downloading NSSM (Non-Sucking Service Manager) -- needs internet access"
     try {
         $tmp = New-TemporaryFile
         $zip = "$($tmp.FullName).zip"
@@ -159,7 +159,7 @@ function Copy-Source {
     Write-Host "==> copying source to $Dest"
     if (-not (Test-Path $Dest)) { New-Item -ItemType Directory -Path $Dest | Out-Null }
     $repoRoot = Split-Path -Parent $PSScriptRoot
-    # node_modules is intentionally NOT excluded — it's committed in the repo
+    # node_modules is intentionally NOT excluded -- it's committed in the repo
     # (every dependency is pure JS, no native binaries, verified safe across
     # platforms) specifically so this install needs zero internet access
     # beyond the original git clone.
@@ -178,20 +178,20 @@ function Copy-Source {
 
 function Install-Dependencies {
     param([string] $InstallPath)
-    # node_modules ships committed in the repo (see Copy-Source) — if it's
+    # node_modules ships committed in the repo (see Copy-Source) -- if it's
     # already there and populated, this laptop needs zero internet access
     # for this step. Only fall back to `npm install` (which does need
     # internet) if it's somehow missing, e.g. a clone that dropped it.
     $nodeModules = Join-Path $InstallPath "node_modules"
     if ((Test-Path $nodeModules) -and (Get-ChildItem $nodeModules -ErrorAction SilentlyContinue | Select-Object -First 1)) {
-        Write-Host "==> node_modules already present (bundled in the repo) — skipping npm install, no internet needed for this step"
+        Write-Host "==> node_modules already present (bundled in the repo) -- skipping npm install, no internet needed for this step"
         return
     }
-    Write-Host "==> node_modules missing — falling back to npm install (needs internet access)"
+    Write-Host "==> node_modules missing -- falling back to npm install (needs internet access)"
     Push-Location $InstallPath
     try {
         & npm install --omit=dev --no-audit --no-fund
-        if ($LASTEXITCODE -ne 0) { throw "npm install failed with exit code $LASTEXITCODE — check this laptop has internet access to the npm registry, or copy node_modules over manually from a machine that has it." }
+        if ($LASTEXITCODE -ne 0) { throw "npm install failed with exit code $LASTEXITCODE -- check this laptop has internet access to the npm registry, or copy node_modules over manually from a machine that has it." }
     } finally {
         Pop-Location
     }
@@ -264,11 +264,11 @@ function Open-Firewall {
     $ruleName = "face-terminal TCP $Port"
     Write-Host "==> adding firewall rule '$ruleName'"
     Remove-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
-    # Scoped to Domain/Private only, not Public — deliberately: the dashboard
+    # Scoped to Domain/Private only, not Public -- deliberately: the dashboard
     # has no login/auth on any endpoint (see README), so widening this to
     # Public networks would mean anyone on an untrusted network (e.g. if
     # Windows ever miscategorizes this LAN) could reach it. That's a
-    # judgment call for a human, not something to silently decide here —
+    # judgment call for a human, not something to silently decide here --
     # see the Public-network warning this prints right after.
     New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -LocalPort $Port `
         -Protocol TCP -Action Allow -Profile Domain,Private | Out-Null
@@ -277,7 +277,7 @@ function Open-Firewall {
 function Test-NetworkProfile {
     param([int] $Port)
     # Windows often defaults a brand-new network connection to "Public"
-    # until a human explicitly marks it Private — very likely to happen at
+    # until a human explicitly marks it Private -- very likely to happen at
     # a new install site connecting for the first time. The firewall rule
     # above only applies to Domain/Private, so on a Public-categorized
     # network the service runs fine locally but nobody else on the LAN can
@@ -286,10 +286,10 @@ function Test-NetworkProfile {
     if (-not $publicProfiles) { return }
     Write-Host ""
     Write-Warning "This network ('$($publicProfiles[0].Name)') is set to Windows' 'Public' profile."
-    Write-Warning "The firewall rule just added only opens the port on Domain/Private networks — other devices on this LAN won't be able to reach the dashboard until this is a Private network."
+    Write-Warning "The firewall rule just added only opens the port on Domain/Private networks -- other devices on this LAN won't be able to reach the dashboard until this is a Private network."
     Write-Warning "If this is genuinely the site's own trusted LAN (usually the case), mark it Private:"
     Write-Warning "  Set-NetConnectionProfile -InterfaceAlias `"$($publicProfiles[0].InterfaceAlias)`" -NetworkCategory Private"
-    Write-Warning "The dashboard itself works fine locally on this laptop either way — this only affects reaching it from other machines."
+    Write-Warning "The dashboard itself works fine locally on this laptop either way -- this only affects reaching it from other machines."
     Write-Host ""
 }
 
@@ -304,7 +304,7 @@ function Start-And-Verify {
         $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/api/stats" -UseBasicParsing -TimeoutSec 8
         Write-Host "==> /api/stats returned $($resp.StatusCode) $($resp.Content)"
     } catch {
-        Write-Warning "dashboard did not respond yet (device discovery can take a few seconds) — check the log at $DataPath\logs\face-terminal.log"
+        Write-Warning "dashboard did not respond yet (device discovery can take a few seconds) -- check the log at $DataPath\logs\face-terminal.log"
     }
 }
 
@@ -323,11 +323,11 @@ function Print-Summary {
     Write-Host "  log:           $DataPath\logs\face-terminal.log"
     Write-Host ""
     if ([string]::IsNullOrWhiteSpace($DeviceIp)) {
-        Write-Host "Device IP wasn't pinned — it's auto-discovering the terminal on this"
+        Write-Host "Device IP wasn't pinned -- it's auto-discovering the terminal on this"
         Write-Host "network by MAC address ($DeviceMac). If it's on a different subnet than"
         Write-Host "this laptop, open the dashboard's Settings panel and type its IP in directly."
     } else {
-        Write-Host "Device IP pinned to $DeviceIp — change it any time in the dashboard's Settings panel."
+        Write-Host "Device IP pinned to $DeviceIp -- change it any time in the dashboard's Settings panel."
     }
     Write-Host ""
     Write-Host "Service commands:"
