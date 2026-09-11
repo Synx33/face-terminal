@@ -58,11 +58,70 @@ if (!existingCols.includes('picture_path')) {
   db.exec('ALTER TABLE checkins ADD COLUMN picture_path TEXT');
 }
 
+// device_id was added when a second physical device (a DS-K2802 card-reader
+// controller, alongside the original DS-K1T343EWX face terminal) entered the
+// picture. `serial_no` is a monotonic counter the DEVICE assigns, not
+// globally unique across devices — two independent devices' counters will
+// eventually produce the same number by coincidence. The original schema's
+// bare `serial_no INTEGER UNIQUE` would silently drop a real event from one
+// device just because the other device had already used that same number,
+// which is a real, if rare, correctness bug once a second device exists.
+// SQLite can't ALTER a column-level UNIQUE constraint away, so this rebuilds
+// the table (rename, recreate with a composite UNIQUE(device_id, serial_no),
+// copy every row across tagged 'face' — the only device that has EVER
+// written to this table before this migration existed, so that tag is exact
+// for 100% of pre-existing data, not a guess). AUTOINCREMENT's sequence
+// counter tracks the highest ROWID ever inserted regardless of whether the
+// ROWID was explicit or auto-assigned, so copying rows with their original
+// ids preserves the id sequence correctly — verified directly against a copy
+// of the real production DB before shipping this (fresh inserts afterward
+// get ids past the old max, no collision, and a same-device duplicate
+// serial_no is still correctly ignored while a cross-device one is not).
+if (!existingCols.includes('device_id')) {
+  db.exec(`
+    ALTER TABLE checkins RENAME TO checkins_old;
+    CREATE TABLE checkins (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      device_id    TEXT NOT NULL DEFAULT 'face',
+      serial_no    INTEGER,
+      event_time   TEXT,
+      received_at  TEXT NOT NULL,
+      employee_no  TEXT,
+      name         TEXT,
+      verify_mode  TEXT,
+      door_no      INTEGER,
+      major_event  INTEGER,
+      minor_event  INTEGER,
+      source       TEXT NOT NULL,
+      raw          TEXT,
+      picture_path TEXT,
+      UNIQUE(device_id, serial_no)
+    );
+    INSERT INTO checkins (id, device_id, serial_no, event_time, received_at, employee_no, name, verify_mode, door_no, major_event, minor_event, source, raw, picture_path)
+      SELECT id, 'face', serial_no, event_time, received_at, employee_no, name, verify_mode, door_no, major_event, minor_event, source, raw, picture_path FROM checkins_old;
+    DROP TABLE checkins_old;
+    CREATE INDEX IF NOT EXISTS idx_checkins_event_time ON checkins(event_time);
+    CREATE INDEX IF NOT EXISTS idx_checkins_employee ON checkins(employee_no);
+  `);
+}
+
 // daily_wage was added after employees already existed in production — same
 // ALTER TABLE guard as picture_path above.
 const existingEmployeeCols = db.prepare('PRAGMA table_info(employees)').all().map((c) => c.name);
 if (!existingEmployeeCols.includes('daily_wage')) {
   db.exec('ALTER TABLE employees ADD COLUMN daily_wage REAL');
+}
+
+// card_no: the employee's card number on the DS-K2802 card-reader controller
+// (distinct from employee_no, which is this app's/the face terminal's own
+// numbering — a card's number is whatever's physically encoded on it). NULL
+// for anyone not issued a card yet. The partial unique index (only over
+// non-NULL values) stops two employees from accidentally being assigned the
+// same physical card while still allowing any number of employees to have
+// no card at all.
+if (!existingEmployeeCols.includes('card_no')) {
+  db.exec('ALTER TABLE employees ADD COLUMN card_no TEXT');
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_employees_card_no ON employees(card_no) WHERE card_no IS NOT NULL');
 }
 
 const upsertEmployeeStmt = db.prepare(`
@@ -103,6 +162,17 @@ function setEmployeeWage(employeeNo, dailyWage) {
     .run(dailyWage ?? null, new Date().toISOString(), String(employeeNo));
 }
 
+/** Assigns (or clears, with cardNo=null) the physical card number an employee's DS-K2802 swipes resolve to. Throws on a card already assigned to someone else (the partial unique index on employees.card_no) — the caller should surface that as a real error, not silently overwrite who a card belongs to. */
+function setEmployeeCard(employeeNo, cardNo) {
+  db.prepare('UPDATE employees SET card_no = ?, updated_at = ? WHERE employee_no = ?')
+    .run(cardNo ? String(cardNo) : null, new Date().toISOString(), String(employeeNo));
+}
+
+function employeeByCard(cardNo) {
+  if (!cardNo) return null;
+  return db.prepare('SELECT employee_no, name, card_no FROM employees WHERE card_no = ?').get(String(cardNo));
+}
+
 /** Removes the employee from the local roster only — caller is responsible for removing them on the device too. Attendance history is kept (it's a historical record, not tied to whether they're still active). */
 function deleteEmployeeLocal(employeeNo) {
   db.prepare('DELETE FROM employees WHERE employee_no = ?').run(String(employeeNo));
@@ -136,18 +206,30 @@ function getPollIntervalMs() {
 
 const insertCheckinStmt = db.prepare(`
   INSERT OR IGNORE INTO checkins
-    (serial_no, event_time, received_at, employee_no, name, verify_mode, door_no, major_event, minor_event, source, raw)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (device_id, serial_no, event_time, received_at, employee_no, name, verify_mode, door_no, major_event, minor_event, source, raw)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
-/** Returns the new row's id, or null if it was a duplicate serialNo (nothing inserted). */
-function insertCheckin(ev, source) {
-  const name = ev.name || employeeName(ev.employeeNo);
+// A card-only event (DS-K2802) may arrive with a cardNo but no employeeNo of
+// its own — resolve it locally via the employee that card is assigned to
+// (setEmployeeCard below), same idea as employeeName() resolving a name for
+// an event that only carried an employeeNo.
+function employeeNoForCard(cardNo) {
+  if (!cardNo) return null;
+  const row = db.prepare('SELECT employee_no FROM employees WHERE card_no = ?').get(String(cardNo));
+  return row ? row.employee_no : null;
+}
+
+/** Returns the new row's id, or null if it was a duplicate (device_id, serialNo) pair (nothing inserted). deviceId defaults to 'face' — the original/only device before a second one existed. */
+function insertCheckin(ev, source, deviceId = 'face') {
+  const employeeNo = ev.employeeNo || employeeNoForCard(ev.cardNo);
+  const name = ev.name || employeeName(employeeNo);
   const result = insertCheckinStmt.run(
+    deviceId,
     ev.serialNo ?? null,
     ev.eventTime ?? null,
     new Date().toISOString(),
-    ev.employeeNo ?? null,
+    employeeNo ?? null,
     name ?? null,
     ev.verifyMode ?? null,
     ev.doorNo ?? null,
@@ -167,7 +249,7 @@ function setCheckinPicture(id, picturePath) {
 
 function getCheckinById(id) {
   return db.prepare(`
-    SELECT id, serial_no, event_time, received_at, employee_no, name, verify_mode, door_no, source, picture_path
+    SELECT id, device_id, serial_no, event_time, received_at, employee_no, name, verify_mode, door_no, source, picture_path
     FROM checkins WHERE id = ?
   `).get(id);
 }
@@ -217,7 +299,7 @@ function isSameSession(employeeNo, eventTime, excludeId) {
 function listCheckins({ date, employeeNo, limit = 200 } = {}) {
   let sql = `
     WITH scoped AS (
-      SELECT id, serial_no, event_time, received_at, employee_no, name, verify_mode, door_no, source, picture_path
+      SELECT id, device_id, serial_no, event_time, received_at, employee_no, name, verify_mode, door_no, source, picture_path
       FROM checkins WHERE 1=1
   `;
   const params = [];
@@ -240,7 +322,7 @@ function listCheckins({ date, employeeNo, limit = 200 } = {}) {
       FROM scoped
     )
     SELECT
-      MIN(id) AS id, serial_no, event_time, received_at, employee_no, name, verify_mode, door_no, source, picture_path,
+      MIN(id) AS id, device_id, serial_no, event_time, received_at, employee_no, name, verify_mode, door_no, source, picture_path,
       direction
     FROM labeled
     -- COALESCE(direction, id): rows with no employee_no have a NULL
@@ -311,4 +393,5 @@ module.exports = {
   setCheckinPicture, getCheckinById, isSameSession, periodOf, getCheckoutAfter, getPollIntervalMs,
   insertPendingWorker, listPendingWorkers, getPendingWorker, deletePendingWorker,
   listEmployees, setEmployeeWage, deleteEmployeeLocal, getSetting, setSetting, payroll,
+  setEmployeeCard, employeeByCard,
 };

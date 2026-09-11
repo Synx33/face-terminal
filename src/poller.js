@@ -15,10 +15,11 @@ const deviceClient = require('./deviceClient');
 const { parseJsonEvent, isCheckin } = require('./hikParser');
 const { isoWithOffset } = require('./time');
 const logger = require('./logger');
-const authState = require('./deviceAuthState');
+const defaultAuthState = require('./deviceAuthState');
 
 // Small overlap on every poll so a slow tick never loses an event at the
-// window boundary — duplicates are harmless, insertCheckin dedupes by serialNo.
+// window boundary — duplicates are harmless, insertCheckin dedupes by
+// (device_id, serialNo).
 const OVERLAP_MS = 5_000;
 
 // The device's clock isn't reliably synced to this host's (observed running
@@ -32,66 +33,79 @@ const OVERLAP_MS = 5_000;
 // anything past its actual real time regardless of how far we ask.
 const CLOCK_SKEW_BUFFER_MS = 3 * 60_000;
 
-let lastPolledThrough = new Date(Date.now() - 60_000); // 60s lookback at boot
+// Factory instead of module-level state so a second physical device (the
+// DS-K2802 card-reader controller, alongside the original face terminal)
+// can run its own independent poll loop — its own lastPolledThrough
+// high-water mark, its own client, its own auth-backoff instance — without
+// duplicating this whole file or having the two devices stomp on each
+// other's state. The default export below preserves the exact original
+// single-device module shape/behavior for every existing caller.
+function createPoller({ deviceId = 'face', client = deviceClient, authState = defaultAuthState, source = 'poll' } = {}) {
+  let lastPolledThrough = new Date(Date.now() - 60_000); // 60s lookback at boot
 
-async function pollOnce(onNewCheckin) {
-  const from = new Date(lastPolledThrough.getTime() - OVERLAP_MS);
-  const now = new Date();
-  const to = new Date(now.getTime() + CLOCK_SKEW_BUFFER_MS);
-  // Advance the high-water mark by REAL elapsed time, not by the
-  // future-padded `to`. Setting it to `to` was the actual bug: every tick
-  // after the first re-derived `from` from an already-future-shifted value,
-  // so the query window permanently drifted to a fixed ~3 minutes ahead of
-  // real time from the second tick onward — a window where no real event
-  // could ever land yet. Only the very first tick after each restart (which
-  // starts from this real, unbuffered `lastPolledThrough` seed) ever worked;
-  // every tick after that was chasing a horizon it could never reach.
-  lastPolledThrough = now;
+  async function pollOnce(onNewCheckin) {
+    const from = new Date(lastPolledThrough.getTime() - OVERLAP_MS);
+    const now = new Date();
+    const to = new Date(now.getTime() + CLOCK_SKEW_BUFFER_MS);
+    // Advance the high-water mark by REAL elapsed time, not by the
+    // future-padded `to`. Setting it to `to` was the actual bug: every tick
+    // after the first re-derived `from` from an already-future-shifted value,
+    // so the query window permanently drifted to a fixed ~3 minutes ahead of
+    // real time from the second tick onward — a window where no real event
+    // could ever land yet. Only the very first tick after each restart (which
+    // starts from this real, unbuffered `lastPolledThrough` seed) ever worked;
+    // every tick after that was chasing a horizon it could never reach.
+    lastPolledThrough = now;
 
-  const infoList = await deviceClient.fetchEvents({
-    startTime: isoWithOffset(from),
-    endTime: isoWithOffset(to),
-  });
+    const infoList = await client.fetchEvents({
+      startTime: isoWithOffset(from),
+      endTime: isoWithOffset(to),
+    });
 
-  for (const info of infoList) {
-    const parsed = parseJsonEvent(info);
-    if (!isCheckin(parsed)) continue;
-    const insertedId = db.insertCheckin(parsed, 'poll');
-    if (insertedId && onNewCheckin) {
-      onNewCheckin(insertedId);
+    for (const info of infoList) {
+      const parsed = parseJsonEvent(info);
+      if (!isCheckin(parsed)) continue;
+      const insertedId = db.insertCheckin(parsed, source, deviceId);
+      if (insertedId && onNewCheckin) {
+        onNewCheckin(insertedId);
+      }
     }
   }
+
+  function startPolling(intervalMs, onNewCheckin, onPollError) {
+    // setInterval doesn't wait for an async callback to finish, so without this
+    // guard a slow/stuck poll would pile up concurrent overlapping calls, all
+    // racing on the shared lastPolledThrough — this is what actually happened
+    // in production (paired with the digest.js timeout fix): one request
+    // apparently stalled, and every subsequent tick queued up behind it
+    // instead of erroring, silently freezing new check-ins out for ~30
+    // minutes with nothing in the logs to show why.
+    let inFlight = false;
+    const tick = () => {
+      if (inFlight) return;
+      // Skip this tick entirely (no request attempted at all, no error/success
+      // callback fired) while we already know the device is rejecting our
+      // credentials — retrying every intervalMs into a known-bad-auth state
+      // would just be the same hammering this backoff exists to prevent, and
+      // it wouldn't tell forceRediscover() anything useful either (the device
+      // is reachable at its current IP, it's just rejecting the password).
+      if (authState.isBackedOff()) return;
+      inFlight = true;
+      pollOnce(onNewCheckin)
+        .then(() => onPollError && onPollError(null))
+        .catch((err) => {
+          logger.error(`poll failed (${deviceId}):`, err.message);
+          if (onPollError) onPollError(err);
+        })
+        .finally(() => { inFlight = false; });
+    };
+    tick();
+    return setInterval(tick, intervalMs);
+  }
+
+  return { pollOnce, startPolling };
 }
 
-function startPolling(intervalMs, onNewCheckin, onPollError) {
-  // setInterval doesn't wait for an async callback to finish, so without this
-  // guard a slow/stuck poll would pile up concurrent overlapping calls, all
-  // racing on the shared lastPolledThrough — this is what actually happened
-  // in production (paired with the digest.js timeout fix): one request
-  // apparently stalled, and every subsequent tick queued up behind it
-  // instead of erroring, silently freezing new check-ins out for ~30
-  // minutes with nothing in the logs to show why.
-  let inFlight = false;
-  const tick = () => {
-    if (inFlight) return;
-    // Skip this tick entirely (no request attempted at all, no error/success
-    // callback fired) while we already know the device is rejecting our
-    // credentials — retrying every intervalMs into a known-bad-auth state
-    // would just be the same hammering this backoff exists to prevent, and
-    // it wouldn't tell forceRediscover() anything useful either (the device
-    // is reachable at its current IP, it's just rejecting the password).
-    if (authState.isBackedOff()) return;
-    inFlight = true;
-    pollOnce(onNewCheckin)
-      .then(() => onPollError && onPollError(null))
-      .catch((err) => {
-        logger.error('poll failed:', err.message);
-        if (onPollError) onPollError(err);
-      })
-      .finally(() => { inFlight = false; });
-  };
-  tick();
-  return setInterval(tick, intervalMs);
-}
+const defaultPoller = createPoller();
 
-module.exports = { pollOnce, startPolling };
+module.exports = { pollOnce: defaultPoller.pollOnce, startPolling: defaultPoller.startPolling, createPoller };

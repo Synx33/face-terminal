@@ -16,42 +16,54 @@ const logger = require('./logger');
 
 const BACKOFF_MS = 10 * 60_000; // 10 min between automatic retries once auth is known to be failing
 
-let backoffUntil = 0;
-let consecutiveFailures = 0;
+// Factory instead of bare module state so a second physical device (the
+// DS-K2802 card-reader controller) can track its own lockout/backoff
+// independently of the face terminal's — a wrong password on one device
+// must never pause requests to the other, they're two unrelated logins on
+// two unrelated boxes. The default export below preserves the exact
+// original single-device module shape for every existing caller.
+function createAuthState(label = 'device') {
+  let backoffUntil = 0;
+  let consecutiveFailures = 0;
 
-function isBackedOff() {
-  return Date.now() < backoffUntil;
-}
-
-function recordAuthFailure() {
-  const enteringBackoff = !isBackedOff();
-  consecutiveFailures += 1;
-  backoffUntil = Date.now() + BACKOFF_MS;
-  // Log once on the transition into backoff, not on every skipped tick
-  // afterward — that would just be a different flavor of the same spam.
-  if (enteringBackoff) {
-    logger.error(`[auth] device rejected credentials (401) — pausing automatic requests for ${BACKOFF_MS / 60_000} min to avoid hammering a possible lockout. Fix credentials in Settings to retry immediately.`);
+  function isBackedOff() {
+    return Date.now() < backoffUntil;
   }
-}
 
-function recordAuthSuccess() {
-  if (consecutiveFailures > 0) {
-    logger.log('[auth] device is accepting credentials again — resuming normal polling');
+  function recordAuthFailure() {
+    const enteringBackoff = !isBackedOff();
+    consecutiveFailures += 1;
+    backoffUntil = Date.now() + BACKOFF_MS;
+    // Log once on the transition into backoff, not on every skipped tick
+    // afterward — that would just be a different flavor of the same spam.
+    if (enteringBackoff) {
+      logger.error(`[auth:${label}] device rejected credentials (401) — pausing automatic requests for ${BACKOFF_MS / 60_000} min to avoid hammering a possible lockout. Fix credentials in Settings to retry immediately.`);
+    }
   }
-  consecutiveFailures = 0;
-  backoffUntil = 0;
+
+  function recordAuthSuccess() {
+    if (consecutiveFailures > 0) {
+      logger.log(`[auth:${label}] device is accepting credentials again — resuming normal polling`);
+    }
+    consecutiveFailures = 0;
+    backoffUntil = 0;
+  }
+
+  // Called when the user explicitly saves new credentials from Settings —
+  // gives the new value an immediate fresh attempt on the very next poll tick
+  // instead of waiting out a backoff window that was set for the OLD (wrong)
+  // credentials.
+  function resetBackoff() {
+    backoffUntil = 0;
+  }
+
+  function status() {
+    return { failing: isBackedOff(), consecutiveFailures, retryAt: backoffUntil || null };
+  }
+
+  return { isBackedOff, recordAuthFailure, recordAuthSuccess, resetBackoff, status };
 }
 
-// Called when the user explicitly saves new credentials from Settings —
-// gives the new value an immediate fresh attempt on the very next poll tick
-// instead of waiting out a backoff window that was set for the OLD (wrong)
-// credentials.
-function resetBackoff() {
-  backoffUntil = 0;
-}
+const defaultAuthState = createAuthState('face');
 
-function status() {
-  return { failing: isBackedOff(), consecutiveFailures, retryAt: backoffUntil || null };
-}
-
-module.exports = { isBackedOff, recordAuthFailure, recordAuthSuccess, resetBackoff, status };
+module.exports = { ...defaultAuthState, createAuthState };

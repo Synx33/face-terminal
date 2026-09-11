@@ -58,9 +58,17 @@ function parseJsonEvent(doc) {
   };
 }
 
+// A bare cardNo counts too, alongside name/employeeNo — added for the
+// DS-K2802 card-reader controller, where the device itself may or may not
+// resolve the swipe to an employeeNo the same reliable way the face
+// terminal's own UserInfo lookup does (unverified until tested against real
+// hardware — see scripts/diagnose-card-device.js). Treating any of the three
+// as "an identification was attempted" lets db.js's insertCheckin() resolve
+// the person locally via its own card_no mapping even if the device didn't,
+// rather than silently dropping the event here before it ever gets a chance to.
 /** True if this event represents an identified person (a check-in), not a bare door/tamper event. */
 function isCheckin(parsed) {
-  return Boolean(parsed.name || parsed.employeeNo);
+  return Boolean(parsed.name || parsed.employeeNo || parsed.cardNo);
 }
 
 module.exports = { parseJsonEvent, isCheckin };

@@ -97,6 +97,8 @@ Or as a systemd service — see `face-terminal.service` for the unit file
 | `CHECKOUT_AFTER` | Initial checkout-time boundary, "HH:MM" 24h (default 19:00) — same as above, overridable live from Settings. |
 | `RECEIVER_IP` | Hostname/IP shown in the startup log line for the dashboard URL (cosmetic only). |
 | `FACE_TERMINAL_DATA` | Where the SQLite DB, snapshots, backups, and log file live. |
+| `CARD_DEVICE_IP` / `CARD_DEVICE_MAC` | Optional second device — a DS-K2802 card-reader controller. Leave both blank to run with just the face terminal (the default). |
+| `CARD_DEVICE_USER` / `CARD_DEVICE_PASS` | Card controller's admin login. Defaults to `DEVICE_USER`/`DEVICE_PASS` if left blank. |
 
 ## What it does
 
@@ -108,6 +110,17 @@ The dashboard is organized into three tabs — **ჩანაწერები*
   notifications — see below) every 1.5s (customizable), shows who badged
   in/out with a photo, in real time. Filterable by date and by worker;
   exports to CSV.
+- **Optional card-reader controller (DS-K2802)** — a second, independent
+  device this dashboard can poll alongside the face terminal for card-swipe
+  check-ins, useful anywhere face recognition is too slow/unreliable on
+  site. Fully opt-in: set `CARD_DEVICE_MAC`/`CARD_DEVICE_IP` in `.env` to
+  enable it, leave them blank and nothing about this changes. Assign a
+  worker's physical card number via `POST /api/employees/:employeeNo/card`;
+  a card swipe resolves to that worker locally even if the device's own
+  on-board card-to-person link isn't set up correctly (unverified against
+  real hardware as of this writing — see
+  `scripts/diagnose-card-device.js`). Since the DS-K2802 has no camera, a
+  card check-in never triggers a photo capture, unlike the face terminal.
 - **Check-in/check-out** — this terminal has no in/out mode selector, so
   direction is derived from time of day: any scan before the configured
   checkout time (default 19:00) is "in", the first scan at or after it is

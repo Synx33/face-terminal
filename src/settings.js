@@ -9,7 +9,9 @@
 const fs = require('fs');
 const path = require('path');
 const { setDeviceIp } = require('./deviceState');
+const { setCardDeviceIp } = require('./cardDeviceState');
 const authState = require('./deviceAuthState');
+const cardAuthState = require('./cardDeviceClient').authState;
 
 const ENV_PATH = path.join(__dirname, '..', '.env');
 
@@ -50,4 +52,28 @@ function setDeviceCredentialsPersisted({ user, pass }) {
   authState.resetBackoff();
 }
 
-module.exports = { setDeviceIpPersisted, setDeviceCredentialsPersisted, ENV_PATH };
+// Same pattern as above, for the second device (DS-K2802 card-reader
+// controller). Separate functions rather than parametrizing the ones above
+// so the face-terminal path is untouched by this addition.
+function setCardDeviceIpPersisted(ip) {
+  setCardDeviceIp(ip);
+  setEnvVar('CARD_DEVICE_IP', ip);
+}
+
+function setCardDeviceCredentialsPersisted({ user, pass }) {
+  if (user !== undefined) {
+    process.env.CARD_DEVICE_USER = user;
+    setEnvVar('CARD_DEVICE_USER', user);
+  }
+  if (pass !== undefined) {
+    process.env.CARD_DEVICE_PASS = pass;
+    setEnvVar('CARD_DEVICE_PASS', pass);
+  }
+  cardAuthState.resetBackoff();
+}
+
+module.exports = {
+  setDeviceIpPersisted, setDeviceCredentialsPersisted,
+  setCardDeviceIpPersisted, setCardDeviceCredentialsPersisted,
+  ENV_PATH,
+};

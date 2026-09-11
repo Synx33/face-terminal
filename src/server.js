@@ -6,15 +6,29 @@ const { WebSocketServer } = require('ws');
 
 const db = require('./db');
 const deviceClient = require('./deviceClient');
-const { startPolling } = require('./poller');
+const { startPolling, createPoller } = require('./poller');
 const { SNAPSHOT_DIR, saveSnapshot, savePendingSnapshot, deleteSnapshot } = require('./snapshots');
 const { resolveDeviceIp, forceRediscover } = require('./resolveDevice');
 const { getDeviceIp, hasDeviceIp } = require('./deviceState');
-const { setDeviceIpPersisted, setDeviceCredentialsPersisted } = require('./settings');
+const {
+  setDeviceIpPersisted, setDeviceCredentialsPersisted,
+  setCardDeviceIpPersisted, setCardDeviceCredentialsPersisted,
+} = require('./settings');
 const { enrollEmployee } = require('./enroll');
 const { runBackup, BACKUP_DIR, BACKUP_INTERVAL_MS } = require('./backup');
 const authState = require('./deviceAuthState');
 const logger = require('./logger');
+
+// --- second device: DS-K2802 card-reader controller (optional) -------------
+// Everything below in this block is fully inert unless CARD_DEVICE_MAC or
+// CARD_DEVICE_IP is actually set in .env — a deployment without this second
+// device (every deployment so far) behaves exactly as before.
+const cardDeviceClient = require('./cardDeviceClient');
+const { resolveCardDeviceIp, forceRediscoverCardDevice } = require('./resolveCardDevice');
+const { getCardDeviceIp, hasCardDeviceIp } = require('./cardDeviceState');
+const cardAuthState = cardDeviceClient.authState;
+const cardEnabled = Boolean(process.env.CARD_DEVICE_MAC || process.env.CARD_DEVICE_IP);
+const cardPoller = createPoller({ deviceId: 'card', client: cardDeviceClient, authState: cardAuthState, source: 'poll' });
 
 const PORT = Number(process.env.PORT || 3070);
 
@@ -74,6 +88,15 @@ app.get('/api/device', (req, res) => {
   res.json({ model: 'DS-K1T343EWX', ip: hasDeviceIp() ? getDeviceIp() : null, auth: authState.status() });
 });
 
+app.get('/api/card-device', (req, res) => {
+  res.json({
+    model: 'DS-K2802',
+    enabled: cardEnabled,
+    ip: hasCardDeviceIp() ? getCardDeviceIp() : null,
+    auth: cardAuthState.status(),
+  });
+});
+
 app.get('/api/stats', (req, res) => {
   res.json(db.stats());
 });
@@ -93,6 +116,10 @@ app.get('/api/settings', (req, res) => {
     currency: db.getSetting('currency', '₾'),
     pollIntervalMs: db.getPollIntervalMs(),
     checkoutAfter: db.getCheckoutAfter(),
+    cardDeviceEnabled: cardEnabled,
+    cardDeviceIp: hasCardDeviceIp() ? getCardDeviceIp() : null,
+    cardDeviceMac: process.env.CARD_DEVICE_MAC || null,
+    cardDeviceUser: process.env.CARD_DEVICE_USER || process.env.DEVICE_USER || null,
   });
 });
 
@@ -104,6 +131,24 @@ app.post('/api/settings/device-ip', (req, res) => {
   setDeviceIpPersisted(ip.trim());
   logger.log(`[settings] device IP manually set to ${ip.trim()}`);
   res.json({ ok: true, deviceIp: ip.trim() });
+});
+
+// Same idea as device-ip/device-credentials above, for the card-reader
+// controller. Setting an IP here for the first time (when the process
+// started with cardEnabled=false, i.e. no CARD_DEVICE_MAC/IP was in .env
+// yet) persists it but does NOT retroactively start polling this session —
+// that only happens on the next restart, same as how DEVICE_IP/MAC always
+// worked before Settings existed at all. Kept simple deliberately: this is
+// a rarely-changed, one-time-setup value, not something that needs
+// live-without-restart semantics the way poll interval or checkout time do.
+app.post('/api/settings/card-device-ip', (req, res) => {
+  const { ip } = req.body || {};
+  if (!ip || typeof ip !== 'string' || !/^\d{1,3}(\.\d{1,3}){3}$/.test(ip.trim())) {
+    return res.status(400).json({ error: 'enter a valid IPv4 address, e.g. 10.10.11.185' });
+  }
+  setCardDeviceIpPersisted(ip.trim());
+  logger.log(`[settings] card device IP manually set to ${ip.trim()}`);
+  res.json({ ok: true, cardDeviceIp: ip.trim() });
 });
 
 app.post('/api/settings/device-credentials', (req, res) => {
@@ -123,6 +168,21 @@ app.post('/api/settings/device-credentials', (req, res) => {
   setDeviceCredentialsPersisted({ user: newUser, pass: newPass });
   logger.log(`[settings] device credentials updated${newUser ? ` (user: ${newUser})` : ''}${newPass ? ' (password changed)' : ''}`);
   res.json({ ok: true, deviceUser: process.env.DEVICE_USER || null });
+});
+
+app.post('/api/settings/card-device-credentials', (req, res) => {
+  const { user, pass } = req.body || {};
+  if (user !== undefined && (typeof user !== 'string' || !user.trim())) {
+    return res.status(400).json({ error: 'username cannot be empty' });
+  }
+  const newPass = typeof pass === 'string' && pass.length > 0 ? pass : undefined;
+  const newUser = user !== undefined ? user.trim() : undefined;
+  if (newUser === undefined && newPass === undefined) {
+    return res.status(400).json({ error: 'nothing to update' });
+  }
+  setCardDeviceCredentialsPersisted({ user: newUser, pass: newPass });
+  logger.log(`[settings] card device credentials updated${newUser ? ` (user: ${newUser})` : ''}${newPass ? ' (password changed)' : ''}`);
+  res.json({ ok: true, cardDeviceUser: process.env.CARD_DEVICE_USER || process.env.DEVICE_USER || null });
 });
 
 app.post('/api/settings/app', (req, res) => {
@@ -342,6 +402,60 @@ app.delete('/api/employees/:employeeNo', async (req, res) => {
   }
 });
 
+// Assigns a physical card number (DS-K2802) to an existing local employee.
+app.post('/api/employees/:employeeNo/card', async (req, res) => {
+  const { employeeNo } = req.params;
+  const { cardNo } = req.body || {};
+  if (!cardNo || typeof cardNo !== 'string' || !cardNo.trim()) {
+    return res.status(400).json({ error: 'card number cannot be empty' });
+  }
+  const trimmedCard = cardNo.trim();
+  const name = db.employeeName(employeeNo);
+  if (!name) {
+    return res.status(404).json({ error: `no local employee #${employeeNo}` });
+  }
+
+  // Local assignment happens first and is never rolled back by a
+  // device-side failure below — same "local DB is authoritative" principle
+  // already used for daily wage: a card swipe can resolve to the right
+  // person via employees.card_no (see db.js's insertCheckin) even if
+  // provisioning it ON the card device itself didn't work.
+  try {
+    db.setEmployeeCard(employeeNo, trimmedCard);
+  } catch (err) {
+    // Almost certainly the partial unique index on card_no — that card
+    // number is already assigned to someone else.
+    return res.status(409).json({ error: `that card number is already assigned to someone else: ${err.message}` });
+  }
+
+  let deviceWarning;
+  if (cardEnabled) {
+    try {
+      // The card device might not know this employeeNo yet — create first,
+      // fall back to modify if it turns out to already exist (mirrors
+      // enroll.js's create-then-modify pattern for the face terminal).
+      try {
+        await cardDeviceClient.createDeviceUser({ employeeNo, name });
+      } catch {
+        await cardDeviceClient.modifyDeviceUser({ employeeNo, name });
+      }
+      // UNVERIFIED endpoint — see cardDeviceClient.js's file-level comment.
+      // If this fails, the local card_no mapping above still lets a raw
+      // card swipe resolve correctly on our side even without the
+      // device's own link, so this is a warning, not a hard failure.
+      await cardDeviceClient.setCardForUser({ employeeNo, cardNo: trimmedCard });
+    } catch (err) {
+      deviceWarning = `card saved locally, but could not provision it on the card device — this endpoint is unverified against real hardware, run scripts/diagnose-card-device.js to check what it actually needs (${err.message})`;
+      logger.error('[card] provisioning failed:', err.message);
+    }
+  } else {
+    deviceWarning = 'card device is not configured (CARD_DEVICE_MAC/CARD_DEVICE_IP not set) — saved locally only; a raw card swipe will still resolve to this employee once the device is added';
+  }
+
+  logger.log(`[employees] card assigned to #${employeeNo}${deviceWarning ? ' (with a warning, see response)' : ''}`);
+  res.json({ ok: true, employeeNo, cardNo: trimmedCard, warning: deviceWarning });
+});
+
 // --- payroll -------------------------------------------------------------------
 app.get('/api/payroll', (req, res) => {
   const { start, end } = req.query;
@@ -458,7 +572,10 @@ function onNewCheckin(insertedId) {
   const row = db.listCheckins({ limit: 1 })[0];
   broadcast({ type: 'checkin', row });
   logger.log(`[checkin] ${row.name || row.employee_no} (${row.direction}) @ ${row.event_time}`);
-  capturePhoto(row);
+  // The card-reader controller has no camera of its own (it's a bare PCB
+  // wired to external Wiegand readers) — only ever try to grab a snapshot
+  // for a row that actually came from the face terminal.
+  if (row.device_id === 'face') capturePhoto(row);
 }
 
 async function onPollError(err) {
@@ -485,6 +602,55 @@ function restartPolling() {
   pollTimer = startPolling(db.getPollIntervalMs(), onNewCheckin, onPollError);
 }
 
+// --- card device startup (only runs at all if cardEnabled) -----------------
+let cardPollTimer = null;
+let cardConsecutiveFailures = 0;
+let cardRediscoveryInFlight = false;
+
+async function onCardPollError(err) {
+  if (!err) { cardConsecutiveFailures = 0; return; }
+  cardConsecutiveFailures += 1;
+  const failureThreshold = Math.max(5, Math.round(30_000 / db.getPollIntervalMs()));
+  if (cardConsecutiveFailures < failureThreshold || cardRediscoveryInFlight) return;
+  cardConsecutiveFailures = 0;
+  cardRediscoveryInFlight = true;
+  try {
+    await forceRediscoverCardDevice();
+  } finally {
+    cardRediscoveryInFlight = false;
+  }
+}
+
+function restartCardPolling() {
+  if (cardPollTimer) clearInterval(cardPollTimer);
+  cardConsecutiveFailures = 0;
+  cardPollTimer = cardPoller.startPolling(db.getPollIntervalMs(), onNewCheckin, onCardPollError);
+}
+
+async function resolveCardDeviceWithRetry() {
+  const RETRY_MS = 15_000;
+  while (true) {
+    try {
+      await resolveCardDeviceIp();
+      return;
+    } catch (err) {
+      logger.error(`[card] device resolution failed (${err.message}); retrying in ${RETRY_MS / 1000}s`);
+      await new Promise((r) => setTimeout(r, RETRY_MS));
+    }
+  }
+}
+
+// Deliberately NOT awaited from server.listen()'s callback below — this is
+// an optional second device, so it must never delay or block startup of the
+// (mandatory) face terminal path. Runs its own independent retry loop in
+// the background and starts polling whenever it manages to find the device.
+async function startCardDeviceInBackground() {
+  logger.log('[card] card-reader controller configured — resolving its IP in the background');
+  await resolveCardDeviceWithRetry();
+  logger.log(`[card] card device ready at ${getCardDeviceIp()}`);
+  restartCardPolling();
+}
+
 server.listen(PORT, async () => {
   logger.log(`face-terminal listening on :${PORT}`);
   logger.log(`  dashboard   http://${process.env.RECEIVER_IP || 'localhost'}:${PORT}/`);
@@ -498,6 +664,8 @@ server.listen(PORT, async () => {
   // what's actually being backed up. Start this immediately instead.
   runBackup();
   setInterval(runBackup, BACKUP_INTERVAL_MS);
+
+  if (cardEnabled) startCardDeviceInBackground();
 
   await resolveDeviceWithRetry();
   syncEmployees();
