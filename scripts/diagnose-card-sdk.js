@@ -36,7 +36,7 @@ try {
     (event) => {
       console.log('\n=== EVENT ===');
       console.log('  cardNo:  ', event.cardNo ?? '(none -- not a card swipe, e.g. a login/operation event)');
-      console.log('  time:    ', event.eventTime.toISOString());
+      console.log('  time:    ', event.eventTime); // already a formatted "+04:00" string, not a Date
       console.log('  major:   ', event.dwMajor);
       console.log('  minor:   ', event.dwMinor);
     },

@@ -39,6 +39,7 @@
 const path = require('path');
 const os = require('os');
 const logger = require('./logger');
+const { isoWithOffset } = require('./time');
 
 let koffi;
 try {
@@ -75,6 +76,8 @@ function libFileName() {
 
 let lib = null;
 let fns = null;
+let callbackProto = null;
+let initialized = false; // NET_DVR_Init/Cleanup are meant to be called once per process lifetime (confirmed from Hikvision's own example code), not once per connection -- see connect() below
 
 function loadLib() {
   if (lib) return fns;
@@ -107,8 +110,16 @@ function loadLib() {
   });
 
   // Verified live (subagent research cross-checked against 2+ independent
-  // real HCNetSDK.h headers): dwSize through byDeployType are stable/old
-  // fields. Trailing tail intentionally oversized -- input-only struct.
+  // real HCNetSDK.h headers, and independently confirmed by an Astra review
+  // against official Hikvision docs): dwSize through byDeployType are
+  // stable/old fields, 16 bytes total with koffi's natural alignment; the
+  // real struct is 20 bytes total including trailing control fields, so
+  // byRes1 is 4 bytes here, not a defensively-oversized guess like the
+  // login struct's tail -- this dwSize gets passed to the device, so an
+  // inflated value here (unlike the input-only login struct) is worth
+  // getting exactly right, not just "safely oversized". Re-verified live
+  // against the real device after tightening this: SetupAlarmChan_V41
+  // still succeeds.
   koffi.struct('NET_DVR_SETUPALARM_PARAM', {
     dwSize: 'DWORD',
     byLevel: 'BYTE',
@@ -121,7 +132,7 @@ function loadLib() {
     byBrokenNetHttp: 'BYTE',
     wTaskNo: 'WORD',
     byDeployType: 'BYTE',
-    byRes1: koffi.array('BYTE', 64),
+    byRes1: koffi.array('BYTE', 4),
   });
 
   fns = {
@@ -136,6 +147,17 @@ function loadLib() {
     CloseAlarmChan_V30: lib.func('BOOL NET_DVR_CloseAlarmChan_V30(LONG)'),
   };
 
+  // Real bug caught by an independent review and reproduced live: koffi
+  // throws "Duplicate type name 'CardAlarmCB'" if a named proto type is
+  // registered twice, and this used to be declared INSIDE connect() --
+  // meaning every reconnect after the very first attempt (any retry after
+  // a failed login, the periodic 6h forced reconnect, a Settings-triggered
+  // reconnect) would throw immediately, before even touching the network,
+  // permanently breaking the card reader until the whole process restarted.
+  // Registering it once here, guarded by the same loadLib() idempotency
+  // check as everything else, fixes this for good.
+  callbackProto = koffi.proto('void CardAlarmCB(int, void *, void *, uint32_t, void *)');
+
   return fns;
 }
 
@@ -145,49 +167,55 @@ function toCharArray(str, len) {
   return [...buf];
 }
 
-// Byte offsets verified live against a real captured alarm payload -- see
-// the file-level comment. Reading with Buffer methods at fixed offsets
-// rather than a full koffi.struct() decode, because NET_DVR_ACS_ALARM_INFO
-// contains a nested NET_DVR_ACS_EVENT_INFO whose own trailing fields are
-// only single-sourced (per the research this was built from) -- fixed
-// offsets for the handful of fields this app actually needs sidesteps that
-// uncertainty entirely, and the leading fields (through byCardNo/
-// dwEmployeeNo/dwDoorNo/byType) are exactly what's already proven correct.
+// Byte offsets verified live against a real captured alarm payload, cross-
+// checked against an independent review's sourced field lists. sNetUser is
+// 16 bytes (MAX_NAMELEN), not 44 -- confirmed precisely: the IP string in
+// the following struRemoteHostAddr field lands at exactly byte 52 (36+16)
+// in a real captured payload, matching this exactly, not the byte-80
+// position the old 44-byte assumption predicted. struAcsEventInfo starts
+// at byte 196 (36 + 16 sNetUser + 144 struRemoteHostAddr/NET_DVR_IPADDR) --
+// confirmed precisely: its own internal dwSize field, read at that offset
+// in a real captured payload, is exactly 104, which matches summing every
+// field in NET_DVR_ACS_EVENT_INFO byte-for-byte. byCardNo is the first
+// field after that struct's own dwSize, at byte 200.
+const OFFSET_NET_USER = 36;
+const NET_USER_LEN = 16;
+const OFFSET_ACS_EVENT_INFO = 196;
+const OFFSET_CARD_NO = OFFSET_ACS_EVENT_INFO + 4; // past struAcsEventInfo's own dwSize
+const CARD_NO_LEN = 32;
+
+// Device timestamps are deliberately NOT used for eventTime (see connect()'s
+// onEvent construction) -- this function still parses/returns them for
+// logging/debugging, but callers should treat dwMajor/dwMinor/cardNo/netUser
+// as the trustworthy fields.
 function decodeAcsAlarmInfo(buf) {
   const dwSize = buf.readUInt32LE(0);
   const dwMajor = buf.readUInt32LE(4);
   const dwMinor = buf.readUInt32LE(8);
-  const year = buf.readUInt32LE(12);
-  const month = buf.readUInt32LE(16);
-  const day = buf.readUInt32LE(20);
-  const hour = buf.readUInt32LE(24);
-  const minute = buf.readUInt32LE(28);
-  const second = buf.readUInt32LE(32);
-  const netUser = buf.subarray(36, 36 + 44).toString('utf8').replace(/\0.*$/s, '');
+  const deviceYear = buf.readUInt32LE(12);
+  const deviceMonth = buf.readUInt32LE(16);
+  const deviceDay = buf.readUInt32LE(20);
+  const deviceHour = buf.readUInt32LE(24);
+  const deviceMinute = buf.readUInt32LE(28);
+  const deviceSecond = buf.readUInt32LE(32);
+  const netUser = buf.subarray(OFFSET_NET_USER, OFFSET_NET_USER + NET_USER_LEN).toString('utf8').replace(/\0.*$/s, '');
 
-  // struAcsEventInfo starts after: dwSize+dwMajor+dwMinor (12) + struTime (24) + sNetUser (MAX_NAMELEN) + struRemoteHostAddr.
-  // MAX_NAMELEN and struRemoteHostAddr's exact size are the one part of this
-  // struct not double-source-confirmed -- rather than guess, event
-  // detection (the only thing that needs this) doesn't actually need
-  // anything from struAcsEventInfo's exact offset: card/employee/door data
-  // is instead pulled from the whole remaining buffer by scanning for the
-  // card-number field pattern below, which is robust to a few bytes of
-  // offset uncertainty in the header portion.
-  const eventTime = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
-
-  return { dwSize, dwMajor, dwMinor, eventTime, netUser, raw: buf };
+  return {
+    dwSize, dwMajor, dwMinor, netUser, raw: buf,
+    deviceReportedTime: { year: deviceYear, month: deviceMonth, day: deviceDay, hour: deviceHour, minute: deviceMinute, second: deviceSecond },
+  };
 }
 
-// byCardNo is a 32-byte, NUL-padded ASCII field somewhere in the tail of
-// the buffer (struAcsEventInfo). Scanning for the first run of printable
-// ASCII digits/letters at least 4 bytes long in the back half of the
-// payload is more robust than trusting an unconfirmed fixed offset for
-// this one field -- verified against captured non-card (operation-type)
-// events correctly finding nothing / empty, not garbage.
+// Exact, verified offset -- see the constants above. Previously scanned the
+// whole tail of the buffer with a regex for "the first printable run",
+// which a real review caught as unreliable: it could match digits inside
+// struRemoteHostAddr's IP-address string instead of the real card field
+// (or the reverse -- miss a real short card number). Reading the exact
+// bounded field removes that risk entirely.
 function extractCardNo(buf) {
-  const tail = buf.subarray(64); // past the confirmed header region
-  const match = tail.toString('latin1').match(/[0-9A-Za-z]{4,32}/);
-  return match ? match[0].replace(/\0+$/, '') : null;
+  if (buf.length < OFFSET_CARD_NO + CARD_NO_LEN) return null;
+  const raw = buf.subarray(OFFSET_CARD_NO, OFFSET_CARD_NO + CARD_NO_LEN).toString('latin1').replace(/\0+$/, '');
+  return raw || null;
 }
 
 /**
@@ -198,7 +226,16 @@ function extractCardNo(buf) {
  */
 function connect({ ip, port = 8000, user, pass }, onEvent) {
   const f = loadLib();
-  if (!f.Init()) throw new Error('NET_DVR_Init failed');
+  // NET_DVR_Init/Cleanup are meant to be called once per process lifetime
+  // (matches Hikvision's own example code) -- calling Init() on every
+  // connect() (every retry, every reconnect) doesn't match that usage
+  // pattern and was flagged by an independent review as a resource-leak
+  // risk, particularly bad during an extended outage where the retry loop
+  // would call connect() every 15s. Guarded to run only once now.
+  if (!initialized) {
+    if (!f.Init()) throw new Error('NET_DVR_Init failed');
+    initialized = true;
+  }
   f.SetConnectTime(3000, 1);
 
   const callback = koffi.register((lCommand, pAlarmer, pAlarmInfo, dwBufLen) => {
@@ -207,11 +244,27 @@ function connect({ ip, port = 8000, user, pass }, onEvent) {
       const raw = Buffer.from(koffi.decode(pAlarmInfo, koffi.array('uint8_t', dwBufLen)));
       const info = decodeAcsAlarmInfo(raw);
       const cardNo = extractCardNo(raw);
-      onEvent({ cardNo, eventTime: info.eventTime, dwMajor: info.dwMajor, dwMinor: info.dwMinor, raw });
+      // Deliberately NOT using the device's own embedded timestamp here.
+      // Verified live, post-firmware-update: the device's reported clock is
+      // currently ~8 hours ahead of true UTC (Beijing/China Standard Time,
+      // not Georgia's UTC+4) -- almost certainly the firmware update reset
+      // its timezone setting to a factory default. A hardcoded "subtract 4
+      // hours" correction would ALSO be wrong now, and fragile against any
+      // future reconfiguration. This is a real-time push notification, not
+      // a polled historical search, so this host's own NTP-synced clock at
+      // the moment the callback fires is a reliable, simple stand-in --
+      // same reasoning already established and proven for the face
+      // terminal's own clock-drift handling (see time.js/poller.js).
+      // Formatted with isoWithOffset (the same helper the face terminal
+      // uses) so event_time matches this app's one established convention
+      // everywhere else: Georgia-local wall-clock time with a +04:00
+      // suffix, which is what periodOf()/the checkout-boundary logic in
+      // db.js expects to find when it slices out "HH:MM" from this string.
+      onEvent({ cardNo, eventTime: isoWithOffset(new Date()), dwMajor: info.dwMajor, dwMinor: info.dwMinor, raw });
     } catch (err) {
       logger.error('[card-sdk] failed to decode alarm payload:', err.message);
     }
-  }, koffi.pointer(koffi.proto('void CardAlarmCB(int, void *, void *, uint32_t, void *)')));
+  }, koffi.pointer(callbackProto));
 
   const loginInfo = {
     sDeviceAddress: toCharArray(ip, 129),
@@ -229,8 +282,15 @@ function connect({ ip, port = 8000, user, pass }, onEvent) {
     iProxyID: 0,
     byRes3: new Array(256).fill(0),
   };
-  const deviceInfoBuf = koffi.alloc('uint8_t', 4096); // opaque, oversized -- see file header note on NET_DVR_DEVICEINFO_V40
+  // Opaque, oversized -- see file header note on NET_DVR_DEVICEINFO_V40.
+  // Freed immediately after the login call either way: nothing in this
+  // module reads from it (device identity isn't needed for event
+  // detection), so there's no reason to hold onto 4KB of native memory for
+  // the lifetime of the connection -- a real leak an independent review
+  // caught, worse than it sounds during a long outage's retry loop.
+  const deviceInfoBuf = koffi.alloc('uint8_t', 4096);
   const lUserID = f.Login_V40(loginInfo, deviceInfoBuf);
+  koffi.free(deviceInfoBuf);
   if (lUserID < 0) {
     koffi.unregister(callback);
     throw new Error(`NET_DVR_Login_V40 failed, error code ${f.GetLastError()}`);
@@ -258,7 +318,7 @@ function connect({ ip, port = 8000, user, pass }, onEvent) {
     byBrokenNetHttp: 0,
     wTaskNo: 0,
     byDeployType: 1, // real-time arming -- rides the existing login session, no separate listening port
-    byRes1: new Array(64).fill(0),
+    byRes1: new Array(4).fill(0),
   };
   const alarmHandle = f.SetupAlarmChan_V41(lUserID, setupParam);
   if (alarmHandle < 0) {

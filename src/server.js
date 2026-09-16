@@ -607,12 +607,17 @@ function restartPolling() {
 
 // The device doesn't hand us a monotonic per-event serial number the way
 // AcsEvent search does for the face terminal, so checkins.serial_no (needed
-// for the device_id+serial_no dedup key) is synthesized locally. True
-// duplicate delivery is much less of a concern here than in the polling
-// model (no overlapping search windows to double-count from) — this is
-// purely to satisfy the schema's uniqueness constraint, not a real dedup need.
-let cardEventSeq = 0;
-
+// for the device_id+serial_no dedup key) is synthesized locally as
+// Date.now() (milliseconds since epoch) rather than a simple in-memory
+// counter. A counter was the original design here, but an independent
+// review caught a real data-loss bug in it, reproduced directly: it started
+// over at 0 on every process restart, while the database's own stored
+// serials from BEFORE the restart don't reset — so a fresh run's very first
+// few real swipes would collide with already-used serial numbers and get
+// silently discarded by the UNIQUE(device_id, serial_no) + INSERT OR IGNORE
+// dedup, exactly the kind of silent data loss this whole app exists to
+// avoid. Date.now() is monotonically increasing across restarts (today's
+// timestamp is always greater than any previous run's), so this can't happen.
 function onCardEvent(event) {
   // Non-swipe alarm-channel traffic (confirmed live: e.g. an admin login
   // shows up on this same feed as dwMajor=3, "operation") has no parseable
@@ -621,11 +626,10 @@ function onCardEvent(event) {
   // is a directly-verified signal, unlike guessing at which dwMajor/dwMinor
   // values specifically mean "this was a real swipe."
   if (!event.cardNo) return;
-  cardEventSeq += 1;
   const insertedId = db.insertCheckin({
-    eventTime: event.eventTime.toISOString(),
+    eventTime: event.eventTime, // already a formatted "+04:00" string (cardSdk.js's isoWithOffset), not a Date
     cardNo: event.cardNo,
-    serialNo: cardEventSeq,
+    serialNo: Date.now(),
     raw: JSON.stringify({ dwMajor: event.dwMajor, dwMinor: event.dwMinor }),
   }, 'push', 'card');
   if (insertedId) onNewCheckin(insertedId);
