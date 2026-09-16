@@ -97,7 +97,7 @@ Or as a systemd service — see `face-terminal.service` for the unit file
 | `CHECKOUT_AFTER` | Initial checkout-time boundary, "HH:MM" 24h (default 19:00) — same as above, overridable live from Settings. |
 | `RECEIVER_IP` | Hostname/IP shown in the startup log line for the dashboard URL (cosmetic only). |
 | `FACE_TERMINAL_DATA` | Where the SQLite DB, snapshots, backups, and log file live. |
-| `CARD_DEVICE_IP` / `CARD_DEVICE_MAC` | Optional second device — a DS-K2802 card-reader controller. Leave both blank to run with just the face terminal (the default). |
+| `CARD_DEVICE_IP` | Optional second device — a DS-K2802 card-reader controller. Leave blank to run with just the face terminal (the default). No auto-discovery for this one (see below) — must be set explicitly. |
 | `CARD_DEVICE_USER` / `CARD_DEVICE_PASS` | Card controller's admin login. Defaults to `DEVICE_USER`/`DEVICE_PASS` if left blank. |
 
 ## What it does
@@ -111,16 +111,51 @@ The dashboard is organized into three tabs — **ჩანაწერები*
   in/out with a photo, in real time. Filterable by date and by worker;
   exports to CSV.
 - **Optional card-reader controller (DS-K2802)** — a second, independent
-  device this dashboard can poll alongside the face terminal for card-swipe
-  check-ins, useful anywhere face recognition is too slow/unreliable on
-  site. Fully opt-in: set `CARD_DEVICE_MAC`/`CARD_DEVICE_IP` in `.env` to
-  enable it, leave them blank and nothing about this changes. Assign a
-  worker's physical card number via `POST /api/employees/:employeeNo/card`;
-  a card swipe resolves to that worker locally even if the device's own
-  on-board card-to-person link isn't set up correctly (unverified against
-  real hardware as of this writing — see
-  `scripts/diagnose-card-device.js`). Since the DS-K2802 has no camera, a
-  card check-in never triggers a photo capture, unlike the face terminal.
+  device this dashboard can listen to alongside the face terminal for
+  card-swipe check-ins, useful anywhere face recognition is too
+  slow/unreliable on site. Fully opt-in: set `CARD_DEVICE_IP` in `.env` to
+  enable it, leave it blank and nothing about this changes.
+
+  This device doesn't speak ISAPI (the HTTP API the face terminal and the
+  rest of this app use) at all — confirmed live against the real hardware,
+  its firmware predates that layer. It only speaks Hikvision's older,
+  proprietary binary "HCNetSDK" protocol (TCP port 8000), so the
+  integration (`src/cardSdk.js`) is a real-time push subscription over that
+  protocol instead of an HTTP poll, verified end-to-end against the real
+  device: a live alarm fired, and every field of the decoded event matched
+  reality exactly (the actual date/time, the actual logged-in username).
+
+  **Card/person enrollment has to happen on the device itself** (its own
+  menu, or iVMS-4200's Person and Card Management screen) — confirmed live
+  that this device does not support remote card provisioning via SDK (every
+  command tried failed consistently, unlike the event-subscription
+  mechanism, which worked correctly on the first attempt — a firmware
+  limitation, not a gap in this code). After enrolling a card on the device,
+  tell the dashboard who it belongs to via
+  `POST /api/employees/:employeeNo/card` — a swipe resolves to that worker
+  locally from then on, entirely independent of anything on the device
+  side. Since the DS-K2802 has no camera, a card check-in never triggers a
+  photo capture, unlike the face terminal.
+
+  **Setup**: this needs Hikvision's own Windows "Device Network SDK" DLLs to
+  actually load on the site laptop — `vendor/hcnetsdk/win64/` is
+  `.gitignore`d (deliberately not committed to this public repo: it's
+  Hikvision's proprietary compiled SDK, sourced during development from an
+  unofficial mirror rather than Hikvision's own account-gated download
+  portal, and that's not this project's call to make about what a public
+  clone redistributes). Before enabling `CARD_DEVICE_IP`:
+  1. Download "Device Network SDK (for Windows 64-bit)" from
+     [Hikvision's own SDK portal](https://www.hikvision.com/en/support/download/sdk/)
+     (free account signup).
+  2. From the download, copy `HCNetSDK.dll`, `HCCore.dll`, `libeay32.dll`,
+     `ssleay32.dll`, and the whole `HCNetSDKCom/` folder into
+     `vendor/hcnetsdk/win64/` (create the folder if needed) on the install
+     directory.
+  3. `npm install` needs to run at least once on that Windows machine
+     (unlike the rest of this app's dependencies, `koffi`'s native binary is
+     platform-specific — a laptop's `node_modules` bundled from this dev box
+     only has the Linux build) — `windows/update.ps1` already falls back to
+     this automatically if a dependency is missing.
 - **Check-in/check-out** — this terminal has no in/out mode selector, so
   direction is derived from time of day: any scan before the configured
   checkout time (default 19:00) is "in", the first scan at or after it is

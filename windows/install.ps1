@@ -160,10 +160,15 @@ function Copy-Source {
     if (-not (Test-Path $Dest)) { New-Item -ItemType Directory -Path $Dest | Out-Null }
     $repoRoot = Split-Path -Parent $PSScriptRoot
     # node_modules is intentionally NOT excluded -- it's committed in the repo
-    # (every dependency is pure JS, no native binaries, verified safe across
-    # platforms) specifically so this install needs zero internet access
-    # beyond the original git clone.
-    $exclude = @(".git", "data", ".env")
+    # specifically so this install needs zero internet access beyond the
+    # original git clone. One exception as of the optional card-reader
+    # integration: koffi's native binary is platform-specific, and this repo
+    # is developed on Linux, so the committed node_modules only has the
+    # Linux build -- see Install-Dependencies below for the Windows fix-up.
+    # vendor holds Hikvision's own SDK DLLs for the optional card-reader
+    # feature (see README) -- gitignored, so a fresh clone never has it
+    # anyway, but excluded explicitly too rather than relying on that.
+    $exclude = @(".git", "data", ".env", "vendor")
     Get-ChildItem -Path $repoRoot -Force | Where-Object {
         $_.Name -notin $exclude
     } | ForEach-Object {
@@ -181,13 +186,29 @@ function Install-Dependencies {
     # node_modules ships committed in the repo (see Copy-Source) -- if it's
     # already there and populated, this laptop needs zero internet access
     # for this step. Only fall back to `npm install` (which does need
-    # internet) if it's somehow missing, e.g. a clone that dropped it.
+    # internet) if it's somehow missing, e.g. a clone that dropped it --
+    # OR if koffi's native binary specifically is missing, which it always
+    # will be on a fresh Windows install: koffi ships a separate platform
+    # package per OS/arch (e.g. @koromix/koffi-win32-x64), and `npm install`
+    # only ever fetches the one matching the machine it runs on -- this repo
+    # is developed on Linux, so the committed node_modules has the Linux
+    # build checked in, never the Windows one. A plain "does node_modules
+    # exist" check would silently skip past this every time and leave the
+    # optional card-reader feature broken with a cryptic native-load error
+    # the first time someone actually enables it.
     $nodeModules = Join-Path $InstallPath "node_modules"
-    if ((Test-Path $nodeModules) -and (Get-ChildItem $nodeModules -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+    $koffiWin32 = Join-Path $nodeModules "@koromix\koffi-win32-x64"
+    $hasNodeModules = (Test-Path $nodeModules) -and (Get-ChildItem $nodeModules -ErrorAction SilentlyContinue | Select-Object -First 1)
+    $hasKoffiWin32 = Test-Path $koffiWin32
+    if ($hasNodeModules -and $hasKoffiWin32) {
         Write-Host "==> node_modules already present (bundled in the repo) -- skipping npm install, no internet needed for this step"
         return
     }
-    Write-Host "==> node_modules missing -- falling back to npm install (needs internet access)"
+    if ($hasNodeModules -and -not $hasKoffiWin32) {
+        Write-Host "==> node_modules present but missing koffi's Windows native binary (expected -- this repo is bundled from a Linux dev machine) -- running npm install to fetch just that piece (needs internet access this one time)"
+    } else {
+        Write-Host "==> node_modules missing -- falling back to npm install (needs internet access)"
+    }
     Push-Location $InstallPath
     try {
         & npm install --omit=dev --no-audit --no-fund

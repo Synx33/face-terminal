@@ -1,8 +1,14 @@
 # node_modules is intentionally NOT ignored — committed on purpose so the
 # Windows install works with zero internet access at setup time (git clone
-# is the only network dependency). Every dependency here is pure JS, no
-# native/compiled binaries, so this is safe across platforms. Verify that
-# stays true (find node_modules -name "*.node") before adding a new dependency.
+# is the only network dependency). Every dependency used to be pure JS, no
+# native/compiled binaries — that's no longer quite true: `koffi` (added for
+# the optional DS-K2802 card-reader integration, src/cardSdk.js) is a real
+# native FFI addon, obtained normally through npm like every other
+# dependency here (not a special case). Its Linux binary (this dev box's
+# platform) commits fine as part of node_modules like anything else; the
+# Windows binary needs its own npm install pass on that platform (see
+# README) since a single `npm install` only ever fetches the binary for the
+# machine it runs on, not every platform at once.
 
 .env
 data/*.db
@@ -12,3 +18,11 @@ data/snapshots/
 data/backups/
 data/app.log*
 .gitnexus
+
+# Hikvision's own proprietary Device Network SDK, needed for the optional
+# DS-K2802 card-reader integration (src/cardSdk.js) to run on Windows.
+# Sourced from an unofficial third-party GitHub mirror during development
+# (Hikvision's own download portal needs an interactive account signup) --
+# deliberately NOT committed pending a decision on redistributing Hikvision's
+# compiled binaries from this PUBLIC repo. See README's card-reader section.
+vendor/

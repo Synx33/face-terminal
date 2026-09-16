@@ -9,9 +9,7 @@
 const fs = require('fs');
 const path = require('path');
 const { setDeviceIp } = require('./deviceState');
-const { setCardDeviceIp } = require('./cardDeviceState');
 const authState = require('./deviceAuthState');
-const cardAuthState = require('./cardDeviceClient').authState;
 
 const ENV_PATH = path.join(__dirname, '..', '.env');
 
@@ -54,9 +52,13 @@ function setDeviceCredentialsPersisted({ user, pass }) {
 
 // Same pattern as above, for the second device (DS-K2802 card-reader
 // controller). Separate functions rather than parametrizing the ones above
-// so the face-terminal path is untouched by this addition.
+// so the face-terminal path is untouched by this addition. No separate
+// state/auth-backoff module here (unlike the face terminal) — the card
+// device connection is a persistent SDK session, not a per-request HTTP
+// client, so server.js just tears it down and reconnects fresh whenever
+// these are called (see reconnectCardDevice in server.js).
 function setCardDeviceIpPersisted(ip) {
-  setCardDeviceIp(ip);
+  process.env.CARD_DEVICE_IP = ip;
   setEnvVar('CARD_DEVICE_IP', ip);
 }
 
@@ -69,7 +71,6 @@ function setCardDeviceCredentialsPersisted({ user, pass }) {
     process.env.CARD_DEVICE_PASS = pass;
     setEnvVar('CARD_DEVICE_PASS', pass);
   }
-  cardAuthState.resetBackoff();
 }
 
 module.exports = {

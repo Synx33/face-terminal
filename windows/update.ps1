@@ -90,7 +90,10 @@ function Fetch-FreshClone {
 # code, never remove or touch the two things that must survive an update.
 function Overlay-Code {
     param([string] $Source, [string] $Dest)
-    $exclude = @(".git", "data", ".env")
+    # vendor holds Hikvision's own SDK DLLs for the optional card-reader
+    # feature (see README) -- gitignored, so a fresh clone never has it
+    # anyway, but excluded explicitly too rather than relying on that.
+    $exclude = @(".git", "data", ".env", "vendor")
     Get-ChildItem -Path $Source -Force | Where-Object { $_.Name -notin $exclude } | ForEach-Object {
         $target = Join-Path $Dest $_.Name
         if (Test-Path $target) { Remove-Item $target -Recurse -Force }
@@ -115,6 +118,26 @@ try {
 
     Write-Host "==> updating code in $InstallPath (leaving .env and data untouched)"
     Overlay-Code -Source $tmp -Dest $InstallPath
+
+    # node_modules gets overwritten by the overlay above (needed so real
+    # dependency changes in future updates actually take effect) -- but this
+    # repo is bundled from a Linux dev machine, so the fresh clone's
+    # node_modules only ever has koffi's LINUX native binary, never the
+    # Windows one. A previous install.ps1 run would have fixed this up with
+    # its own npm install pass, but that fix just got silently overwritten
+    # by the line above -- redo it here so the optional card-reader feature
+    # doesn't quietly break on every single update.
+    $koffiWin32 = Join-Path $InstallPath "node_modules\@koromix\koffi-win32-x64"
+    if (-not (Test-Path $koffiWin32)) {
+        Write-Host "==> koffi's Windows native binary is missing after the update (expected -- see comment above) -- running npm install to restore it (needs internet access this one time)"
+        Push-Location $InstallPath
+        try {
+            & npm install --omit=dev --no-audit --no-fund
+            if ($LASTEXITCODE -ne 0) { Write-Warning "npm install failed -- the card-reader feature (if you use it) may not work until this is fixed; the rest of the app is unaffected." }
+        } finally {
+            Pop-Location
+        }
+    }
 
     Write-Host "==> starting $ServiceName"
     Start-Service -Name $ServiceName

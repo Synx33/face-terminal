@@ -6,7 +6,7 @@ const { WebSocketServer } = require('ws');
 
 const db = require('./db');
 const deviceClient = require('./deviceClient');
-const { startPolling, createPoller } = require('./poller');
+const { startPolling } = require('./poller');
 const { SNAPSHOT_DIR, saveSnapshot, savePendingSnapshot, deleteSnapshot } = require('./snapshots');
 const { resolveDeviceIp, forceRediscover } = require('./resolveDevice');
 const { getDeviceIp, hasDeviceIp } = require('./deviceState');
@@ -20,15 +20,22 @@ const authState = require('./deviceAuthState');
 const logger = require('./logger');
 
 // --- second device: DS-K2802 card-reader controller (optional) -------------
-// Everything below in this block is fully inert unless CARD_DEVICE_MAC or
-// CARD_DEVICE_IP is actually set in .env — a deployment without this second
-// device (every deployment so far) behaves exactly as before.
-const cardDeviceClient = require('./cardDeviceClient');
-const { resolveCardDeviceIp, forceRediscoverCardDevice } = require('./resolveCardDevice');
-const { getCardDeviceIp, hasCardDeviceIp } = require('./cardDeviceState');
-const cardAuthState = cardDeviceClient.authState;
-const cardEnabled = Boolean(process.env.CARD_DEVICE_MAC || process.env.CARD_DEVICE_IP);
-const cardPoller = createPoller({ deviceId: 'card', client: cardDeviceClient, authState: cardAuthState, source: 'poll' });
+// Everything below in this block is fully inert unless CARD_DEVICE_IP is
+// actually set in .env — a deployment without this second device (every
+// deployment so far) behaves exactly as before.
+//
+// This device speaks Hikvision's proprietary binary "HCNetSDK" protocol
+// (TCP port 8000), NOT the HTTP-based ISAPI the face terminal uses —
+// confirmed live: NET_DVR_STDXMLConfig (the ISAPI-passthrough call) returns
+// NET_DVR_NOSUPPORT on this firmware. So unlike the face terminal, this is
+// push-based (a real-time alarm subscription that calls onNewCheckin the
+// moment a card is swiped), not polled — see src/cardSdk.js for the full
+// verification story. It also can't be found via the face terminal's
+// MAC-scan discovery (that probes ISAPI too) — CARD_DEVICE_IP must be set
+// explicitly.
+const cardSdk = require('./cardSdk');
+const cardEnabled = Boolean(process.env.CARD_DEVICE_IP);
+let cardConnection = null;
 
 const PORT = Number(process.env.PORT || 3070);
 
@@ -92,8 +99,8 @@ app.get('/api/card-device', (req, res) => {
   res.json({
     model: 'DS-K2802',
     enabled: cardEnabled,
-    ip: hasCardDeviceIp() ? getCardDeviceIp() : null,
-    auth: cardAuthState.status(),
+    ip: process.env.CARD_DEVICE_IP || null,
+    connected: Boolean(cardConnection),
   });
 });
 
@@ -117,8 +124,7 @@ app.get('/api/settings', (req, res) => {
     pollIntervalMs: db.getPollIntervalMs(),
     checkoutAfter: db.getCheckoutAfter(),
     cardDeviceEnabled: cardEnabled,
-    cardDeviceIp: hasCardDeviceIp() ? getCardDeviceIp() : null,
-    cardDeviceMac: process.env.CARD_DEVICE_MAC || null,
+    cardDeviceIp: process.env.CARD_DEVICE_IP || null,
     cardDeviceUser: process.env.CARD_DEVICE_USER || process.env.DEVICE_USER || null,
   });
 });
@@ -148,6 +154,7 @@ app.post('/api/settings/card-device-ip', (req, res) => {
   }
   setCardDeviceIpPersisted(ip.trim());
   logger.log(`[settings] card device IP manually set to ${ip.trim()}`);
+  reconnectCardDevice();
   res.json({ ok: true, cardDeviceIp: ip.trim() });
 });
 
@@ -182,6 +189,7 @@ app.post('/api/settings/card-device-credentials', (req, res) => {
   }
   setCardDeviceCredentialsPersisted({ user: newUser, pass: newPass });
   logger.log(`[settings] card device credentials updated${newUser ? ` (user: ${newUser})` : ''}${newPass ? ' (password changed)' : ''}`);
+  reconnectCardDevice();
   res.json({ ok: true, cardDeviceUser: process.env.CARD_DEVICE_USER || process.env.DEVICE_USER || null });
 });
 
@@ -428,31 +436,20 @@ app.post('/api/employees/:employeeNo/card', async (req, res) => {
     return res.status(409).json({ error: `that card number is already assigned to someone else: ${err.message}` });
   }
 
-  let deviceWarning;
-  if (cardEnabled) {
-    try {
-      // The card device might not know this employeeNo yet — create first,
-      // fall back to modify if it turns out to already exist (mirrors
-      // enroll.js's create-then-modify pattern for the face terminal).
-      try {
-        await cardDeviceClient.createDeviceUser({ employeeNo, name });
-      } catch {
-        await cardDeviceClient.modifyDeviceUser({ employeeNo, name });
-      }
-      // UNVERIFIED endpoint — see cardDeviceClient.js's file-level comment.
-      // If this fails, the local card_no mapping above still lets a raw
-      // card swipe resolve correctly on our side even without the
-      // device's own link, so this is a warning, not a hard failure.
-      await cardDeviceClient.setCardForUser({ employeeNo, cardNo: trimmedCard });
-    } catch (err) {
-      deviceWarning = `card saved locally, but could not provision it on the card device — this endpoint is unverified against real hardware, run scripts/diagnose-card-device.js to check what it actually needs (${err.message})`;
-      logger.error('[card] provisioning failed:', err.message);
-    }
-  } else {
-    deviceWarning = 'card device is not configured (CARD_DEVICE_MAC/CARD_DEVICE_IP not set) — saved locally only; a raw card swipe will still resolve to this employee once the device is added';
-  }
+  // No device-side provisioning call here — confirmed live against the real
+  // DS-K2802 that it does not support remote card/person enrollment via SDK
+  // (every provisioning command tried failed consistently, unlike the alarm
+  // subscription mechanism which worked on the first correctly-parameterized
+  // attempt — a firmware limitation, not a gap in this code). The card must
+  // be enrolled ON the device itself (its own menu, or iVMS-4200's Person
+  // and Card Management screen) — this endpoint only records which employee
+  // that card number belongs to locally, which is all a swipe event needs
+  // to resolve correctly (see db.js's insertCheckin/employeeNoForCard).
+  const deviceWarning = cardEnabled
+    ? null
+    : 'card device is not configured (CARD_DEVICE_IP not set) — saved locally only; a raw card swipe will still resolve to this employee once the device is added';
 
-  logger.log(`[employees] card assigned to #${employeeNo}${deviceWarning ? ' (with a warning, see response)' : ''}`);
+  logger.log(`[employees] card assigned to #${employeeNo} locally${deviceWarning ? ' (device not configured)' : ' — remember to also enroll this card on the device itself, provisioning is not remote-controllable on this hardware'}`);
   res.json({ ok: true, employeeNo, cardNo: trimmedCard, warning: deviceWarning });
 });
 
@@ -602,53 +599,75 @@ function restartPolling() {
   pollTimer = startPolling(db.getPollIntervalMs(), onNewCheckin, onPollError);
 }
 
-// --- card device startup (only runs at all if cardEnabled) -----------------
-let cardPollTimer = null;
-let cardConsecutiveFailures = 0;
-let cardRediscoveryInFlight = false;
+// --- card device lifecycle (only runs at all if cardEnabled) ---------------
+// Push-based, not polled: a persistent HCNetSDK session subscribes to
+// real-time alarms and onCardEvent() fires directly from that callback,
+// so there's no poll-interval/tick/backoff machinery to mirror from the
+// face terminal's side here.
 
-async function onCardPollError(err) {
-  if (!err) { cardConsecutiveFailures = 0; return; }
-  cardConsecutiveFailures += 1;
-  const failureThreshold = Math.max(5, Math.round(30_000 / db.getPollIntervalMs()));
-  if (cardConsecutiveFailures < failureThreshold || cardRediscoveryInFlight) return;
-  cardConsecutiveFailures = 0;
-  cardRediscoveryInFlight = true;
-  try {
-    await forceRediscoverCardDevice();
-  } finally {
-    cardRediscoveryInFlight = false;
-  }
+// The device doesn't hand us a monotonic per-event serial number the way
+// AcsEvent search does for the face terminal, so checkins.serial_no (needed
+// for the device_id+serial_no dedup key) is synthesized locally. True
+// duplicate delivery is much less of a concern here than in the polling
+// model (no overlapping search windows to double-count from) — this is
+// purely to satisfy the schema's uniqueness constraint, not a real dedup need.
+let cardEventSeq = 0;
+
+function onCardEvent(event) {
+  // Non-swipe alarm-channel traffic (confirmed live: e.g. an admin login
+  // shows up on this same feed as dwMajor=3, "operation") has no parseable
+  // card number — extractCardNo() already returns null for those (verified
+  // against a real captured non-swipe event), so filtering on cardNo alone
+  // is a directly-verified signal, unlike guessing at which dwMajor/dwMinor
+  // values specifically mean "this was a real swipe."
+  if (!event.cardNo) return;
+  cardEventSeq += 1;
+  const insertedId = db.insertCheckin({
+    eventTime: event.eventTime.toISOString(),
+    cardNo: event.cardNo,
+    serialNo: cardEventSeq,
+    raw: JSON.stringify({ dwMajor: event.dwMajor, dwMinor: event.dwMinor }),
+  }, 'push', 'card');
+  if (insertedId) onNewCheckin(insertedId);
 }
 
-function restartCardPolling() {
-  if (cardPollTimer) clearInterval(cardPollTimer);
-  cardConsecutiveFailures = 0;
-  cardPollTimer = cardPoller.startPolling(db.getPollIntervalMs(), onNewCheckin, onCardPollError);
-}
+let cardConnectInFlight = false;
 
-async function resolveCardDeviceWithRetry() {
+async function connectCardDeviceWithRetry() {
+  if (cardConnectInFlight) return;
+  cardConnectInFlight = true;
   const RETRY_MS = 15_000;
-  while (true) {
-    try {
-      await resolveCardDeviceIp();
-      return;
-    } catch (err) {
-      logger.error(`[card] device resolution failed (${err.message}); retrying in ${RETRY_MS / 1000}s`);
-      await new Promise((r) => setTimeout(r, RETRY_MS));
+  try {
+    while (cardEnabled && !cardConnection) {
+      try {
+        cardConnection = cardSdk.connect({
+          ip: process.env.CARD_DEVICE_IP,
+          user: process.env.CARD_DEVICE_USER || process.env.DEVICE_USER,
+          pass: process.env.CARD_DEVICE_PASS || process.env.DEVICE_PASS,
+        }, onCardEvent);
+        logger.log(`[card] connected to card device at ${process.env.CARD_DEVICE_IP}`);
+      } catch (err) {
+        logger.error(`[card] connection failed (${err.message}); retrying in ${RETRY_MS / 1000}s`);
+        cardConnection = null;
+        await new Promise((r) => setTimeout(r, RETRY_MS));
+      }
     }
+  } finally {
+    cardConnectInFlight = false;
   }
 }
 
-// Deliberately NOT awaited from server.listen()'s callback below — this is
-// an optional second device, so it must never delay or block startup of the
-// (mandatory) face terminal path. Runs its own independent retry loop in
-// the background and starts polling whenever it manages to find the device.
-async function startCardDeviceInBackground() {
-  logger.log('[card] card-reader controller configured — resolving its IP in the background');
-  await resolveCardDeviceWithRetry();
-  logger.log(`[card] card device ready at ${getCardDeviceIp()}`);
-  restartCardPolling();
+// Closes and re-opens the session — used after a credentials/IP change from
+// Settings, and as a periodic safety net (below): this SDK's C API doesn't
+// give a verified "connection was lost" callback to react to here, so
+// rather than silently going dark for good after a device reboot or network
+// blip, a fresh reconnect is forced periodically regardless of apparent state.
+function reconnectCardDevice() {
+  if (cardConnection) {
+    try { cardConnection.close(); } catch { /* best-effort */ }
+    cardConnection = null;
+  }
+  if (cardEnabled) connectCardDeviceWithRetry();
 }
 
 server.listen(PORT, async () => {
@@ -665,7 +684,14 @@ server.listen(PORT, async () => {
   runBackup();
   setInterval(runBackup, BACKUP_INTERVAL_MS);
 
-  if (cardEnabled) startCardDeviceInBackground();
+  // Deliberately NOT awaited — an optional second device must never delay
+  // or block startup of the (mandatory) face terminal path below.
+  if (cardEnabled) {
+    connectCardDeviceWithRetry();
+    // Periodic forced reconnect — see reconnectCardDevice's comment on why
+    // this exists instead of reacting to a verified disconnect signal.
+    setInterval(reconnectCardDevice, 6 * 60 * 60 * 1000); // every 6h
+  }
 
   await resolveDeviceWithRetry();
   syncEmployees();
