@@ -316,6 +316,14 @@ button:disabled { opacity: 0.5; cursor: default; transform: none; }
 }
 .badge.in  { background: var(--accent-soft); color: var(--accent-ink); }
 .badge.out { background: transparent; color: var(--out); border: 1px solid var(--border); }
+.badge.device-card { background: transparent; color: var(--text-faint); border: 1px solid var(--border); font-weight: 500; }
+
+.badges {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  justify-content: flex-end;
+}
 
 .empty {
   color: var(--text-faint);

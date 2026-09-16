@@ -95,6 +95,15 @@ function directionBadge(direction) {
   return `<span class="badge ${direction}">${label}</span>`;
 }
 
+// Only the exception (a card-reader check-in) gets a marker — the face
+// terminal is the default/majority case for every deployment so far, so
+// badging every single row for it would just be noise. Once device_id
+// stops being 'face' for basically everything, this is easy to flip.
+function deviceBadge(deviceId) {
+  if (deviceId !== 'card') return '';
+  return `<span class="badge device-card" title="ბარათის წამკითხველი">ბარათი</span>`;
+}
+
 function renderRow(row, fresh) {
   const el = document.createElement('div');
   el.className = 'row' + (fresh ? ' fresh' : '');
@@ -107,7 +116,7 @@ function renderRow(row, fresh) {
       <div class="no">#${row.employee_no ?? '—'}</div>
     </div>
     <div class="time">${timeOnly(row.event_time)}</div>
-    ${directionBadge(row.direction)}
+    <div class="badges">${directionBadge(row.direction)}${deviceBadge(row.device_id)}</div>
   `;
   return el;
 }
@@ -298,6 +307,36 @@ async function loadDeviceInfo() {
     // cosmetic only — fine if this silently stays as the static fallback text
   }
 }
+
+// Same pattern as loadDeviceInfo above, for the optional card-reader
+// controller — stays completely hidden when the feature isn't configured at
+// all (matches the whole card-reader feature's "invisible unless opted in"
+// design), so this adds nothing to look at for the common single-device
+// deployment. Refreshed periodically (unlike the face terminal's one-shot
+// load) because this is a push-based connection that can silently drop
+// between page loads with no other signal an admin would see otherwise.
+async function loadCardDeviceInfo() {
+  try {
+    const res = await fetch('/api/card-device');
+    const info = await res.json();
+    const subtitleEl = document.getElementById('cardDeviceSubtitle');
+    if (!info.enabled) {
+      subtitleEl.hidden = true;
+      return;
+    }
+    subtitleEl.hidden = false;
+    if (info.connected) {
+      subtitleEl.textContent = `${info.model} · ${info.ip} · დაკავშირებულია`;
+      subtitleEl.classList.remove('subtitle-err');
+    } else {
+      subtitleEl.textContent = `${info.model} · კავშირი გაწყვეტილია`;
+      subtitleEl.classList.add('subtitle-err');
+    }
+  } catch {
+    // cosmetic only
+  }
+}
+setInterval(loadCardDeviceInfo, 30_000);
 
 // The auth-failure state can change on its own between page loads (backoff
 // expiring, or someone fixing the password from another tab/device) —
@@ -768,6 +807,7 @@ document.addEventListener('keydown', (e) => {
 load();
 loadPending();
 loadDeviceInfo();
+loadCardDeviceInfo();
 loadSettings();
 loadEmployeeFilterOptions();
 loadWorkers();
