@@ -519,6 +519,12 @@ function renderWorkerCard(w) {
   const el = document.createElement('div');
   el.className = 'pending-card';
   el.dataset.employeeNo = w.employee_no;
+  // A card-only worker (employee_no starting with "C" -- enrolled straight
+  // from a captured card, see the "ბარათის მოლოდინი" flow) was never given
+  // a face on the terminal at all, so the usual "deletes their face and
+  // access from the terminal too" wording would be actively wrong for
+  // them -- there's nothing on that device to remove.
+  const isCardOnly = /^C/.test(String(w.employee_no));
   el.innerHTML = `
     ${w.picture_path
       ? `<img class="thumb" src="/snapshots/${w.picture_path}" alt="" />`
@@ -531,7 +537,7 @@ function renderWorkerCard(w) {
     </div>
     <div class="pending-row">
       <button class="save primary">შენახვა</button>
-      <button class="discard" title="სრულად წაშლა ტერმინალიდან">წაშლა</button>
+      <button class="discard" title="${isCardOnly ? 'წაშლა' : 'სრულად წაშლა ტერმინალიდან'}">წაშლა</button>
     </div>
     <div class="pending-status"></div>
     <div class="no">#${w.employee_no}</div>
@@ -610,7 +616,10 @@ function renderWorkerCard(w) {
 
   removeBtn.addEventListener('click', async () => {
     const currentName = nameInput.value.trim() || w.name || `#${w.employee_no}`;
-    if (!confirm(`წავშალოთ ${currentName} ტერმინალიდან? წაშლისას წაიშლება მისი სახეც და წვდომაც — ადრინდელი დასწრების ისტორია შენარჩუნდება.`)) return;
+    const confirmMsg = isCardOnly
+      ? `წავშალოთ ${currentName}? ადრინდელი დასწრების ისტორია შენარჩუნდება.`
+      : `წავშალოთ ${currentName} ტერმინალიდან? წაშლისას წაიშლება მისი სახეც და წვდომაც — ადრინდელი დასწრების ისტორია შენარჩუნდება.`;
+    if (!confirm(confirmMsg)) return;
     removeBtn.disabled = true;
     saveBtn.disabled = true;
     statusEl.className = 'pending-status';

@@ -481,46 +481,35 @@ app.post('/api/pending-cards/:id/claim', async (req, res) => {
       !(Number.isFinite(Number(dailyWage)) && Number(dailyWage) >= 0)) {
     return res.status(400).json({ error: 'daily wage must be a non-negative number' });
   }
-  // This still creates the employee_no on the FACE terminal (enrollEmployee
-  // always does — employee_no is that device's own counter, the one
-  // identity both devices key off of), just with no photo. A card-only
-  // worker (no face at all) is a real, intended outcome here, not a
-  // degraded case.
-  if (rejectIfAuthBackedOff(res)) return;
+  // Deliberately does NOT touch the face terminal at all -- a card-only
+  // worker never shows their face to that device, so there's no reason
+  // enrolling one should depend on it being reachable. employeeNo comes
+  // from this app's own local "C<n>" namespace (db.nextLocalEmployeeNo())
+  // instead of deviceClient.nextEmployeeNo(), which used to make this
+  // claim fail outright with a confusing "device IP not yet resolved"
+  // error any time the (unrelated) face terminal happened to be offline.
   const pending = db.getPendingCard(id);
   if (!pending) return res.status(404).json({ error: 'no such pending capture' });
   if (!pending.card_no) return res.status(409).json({ error: 'ბარათი ჯერ არ დაფიქსირებულა — მიადეთ ბარათი წამკითხველს და მოიცადეთ' });
 
+  const employeeNo = db.nextLocalEmployeeNo();
+  db.upsertEmployee(employeeNo, name.trim(), dailyWage === undefined || dailyWage === null ? null : Number(dailyWage));
   try {
-    const result = await enrollEmployee({
-      name: name.trim(),
-      jpegBuffer: null,
-      dailyWage: dailyWage === undefined || dailyWage === null ? null : Number(dailyWage),
-    });
-    try {
-      db.setEmployeeCard(result.employeeNo, pending.card_no);
-    } catch (err) {
-      // The employee was already created successfully just above (real
-      // employee_no on the device) -- only the card assignment itself
-      // collided with an existing owner (partial unique index on
-      // employees.card_no, almost certainly the same physical card tapped
-      // and claimed once already). Same "local DB is authoritative, no
-      // rollback" principle as the /card endpoint above: leave the new
-      // employee as-is rather than deleting them over an unrelated field,
-      // and surface the real problem instead of a misleading "could not
-      // create user" message.
-      clearPendingCardTimer(id);
-      db.deletePendingCard(id);
-      return res.status(409).json({ error: `თანამშრომელი #${result.employeeNo} შეიქმნა, მაგრამ ეს ბარათი უკვე მინიჭებული აქვს სხვას: ${err.message}` });
-    }
+    db.setEmployeeCard(employeeNo, pending.card_no);
+  } catch (err) {
+    // The employee row above is already committed -- only the card
+    // assignment itself collided with an existing owner (partial unique
+    // index on employees.card_no, almost certainly the same physical card
+    // tapped and claimed once already). Same "leave what succeeded,
+    // surface the real problem" principle as the /card endpoint above.
     clearPendingCardTimer(id);
     db.deletePendingCard(id);
-    logger.log(`[enroll] claimed pending card #${id} (${pending.card_no}) as #${result.employeeNo} ${result.name}`);
-    res.json({ ...result, cardNo: pending.card_no });
-  } catch (err) {
-    logger.error('card claim failed:', err.message);
-    res.status(502).json({ error: `could not create user on terminal: ${err.message}` });
+    return res.status(409).json({ error: `თანამშრომელი #${employeeNo} შეიქმნა, მაგრამ ეს ბარათი უკვე მინიჭებული აქვს სხვას: ${err.message}` });
   }
+  clearPendingCardTimer(id);
+  db.deletePendingCard(id);
+  logger.log(`[enroll] claimed pending card #${id} (${pending.card_no}) as local #${employeeNo} ${name.trim()}`);
+  res.json({ employeeNo, name: name.trim(), cardNo: pending.card_no });
 });
 
 app.delete('/api/pending-cards/:id', (req, res) => {
@@ -548,16 +537,24 @@ app.put('/api/employees/:employeeNo', async (req, res) => {
     return res.status(400).json({ error: 'daily wage must be a non-negative number' });
   }
   const wage = dailyWage === undefined ? undefined : (dailyWage === null ? null : Number(dailyWage));
-  // Only the rename branch below actually touches the device — a wage-only
-  // edit is a pure local DB write, so it's never gated on device auth state.
-  if (name !== undefined && rejectIfAuthBackedOff(res)) return;
+  // A card-only employee (db.isCardOnlyEmployeeNo — enrolled through the
+  // pending-cards claim flow, never given a face at all) has nothing on
+  // the face terminal to rename in the first place, so the device call
+  // below only ever runs for a real device-backed employee. Only THAT
+  // branch is gated on device auth state — a wage-only edit, or any edit
+  // to a card-only employee, is a pure local DB write regardless.
+  const touchesDevice = name !== undefined && !db.isCardOnlyEmployeeNo(employeeNo);
+  if (touchesDevice && rejectIfAuthBackedOff(res)) return;
   try {
-    if (name !== undefined) {
+    if (name !== undefined && touchesDevice) {
       // Renaming touches the device too — modifyDeviceUser resets that
       // user's valid-dates window on the device (fine, a minor cosmetic
       // side effect), which is why this only runs when a name was actually
       // given, not on every wage-only edit.
       await deviceClient.modifyDeviceUser({ employeeNo, name: name.trim() });
+      db.upsertEmployee(employeeNo, name.trim(), wage);
+    } else if (name !== undefined) {
+      // Card-only employee — local rename, no device involved.
       db.upsertEmployee(employeeNo, name.trim(), wage);
     } else if (wage !== undefined) {
       // Wage-only edit — go through setEmployeeWage instead of
@@ -574,6 +571,14 @@ app.put('/api/employees/:employeeNo', async (req, res) => {
 
 app.delete('/api/employees/:employeeNo', async (req, res) => {
   const { employeeNo } = req.params;
+  // A card-only employee (db.isCardOnlyEmployeeNo) has no device-side user
+  // or face to remove at all -- deleting one is a pure local operation,
+  // never gated on the face terminal being reachable.
+  if (db.isCardOnlyEmployeeNo(employeeNo)) {
+    db.deleteEmployeeLocal(employeeNo);
+    logger.log(`[employees] removed local card-only #${employeeNo}`);
+    return res.json({ ok: true });
+  }
   if (rejectIfAuthBackedOff(res)) return;
   try {
     // Removes both the device user AND their enrolled face (the device
@@ -812,6 +817,12 @@ function restartPolling() {
 // avoid. Date.now() is monotonically increasing across restarts (today's
 // timestamp is always greater than any previous run's), so this can't happen.
 function onCardEvent(event) {
+  // Unconditional, every single alarm-channel event this device sends,
+  // not just ones that turn into a checkin or a captured pending card --
+  // added specifically to answer "did a real tap reach the software at
+  // all, and what did it look like" from the journal directly, without
+  // needing a separate scratch script each time that question comes up.
+  logger.log(`[card] event received: major=${event.dwMajor} minor=${event.dwMinor} cardNo=${event.cardNo ?? '(none)'} netUser=${event.netUser ?? ''}`);
   // Non-swipe alarm-channel traffic (confirmed live: e.g. an admin login
   // shows up on this same feed as dwMajor=3, "operation") has no parseable
   // card number — extractCardNo() already returns null for those (verified

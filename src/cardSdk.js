@@ -263,7 +263,7 @@ function connect({ ip, port = 8000, user, pass }, onEvent) {
       // everywhere else: Georgia-local wall-clock time with a +04:00
       // suffix, which is what periodOf()/the checkout-boundary logic in
       // db.js expects to find when it slices out "HH:MM" from this string.
-      onEvent({ cardNo, eventTime: isoWithOffset(new Date()), dwMajor: info.dwMajor, dwMinor: info.dwMinor, raw });
+      onEvent({ cardNo, eventTime: isoWithOffset(new Date()), dwMajor: info.dwMajor, dwMinor: info.dwMinor, netUser: info.netUser, raw });
     } catch (err) {
       logger.error('[card-sdk] failed to decode alarm payload:', err.message);
     }

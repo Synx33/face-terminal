@@ -177,6 +177,27 @@ function setEmployeeWage(employeeNo, dailyWage) {
     .run(dailyWage ?? null, new Date().toISOString(), String(employeeNo));
 }
 
+// Card-only workers (enrolled straight from a captured card via the
+// pending-cards claim flow, never touching the face terminal at all) get
+// an employee_no in this app's own "C<n>" namespace instead of one minted
+// by the face terminal's deviceClient.nextEmployeeNo() -- deliberately
+// disjoint from that scheme (which only ever hands out plain digit
+// strings), so the two numbering sources can never collide and callers
+// can tell which kind of employee they're looking at from the ID alone,
+// no separate column needed. See server.js's rename/delete routes, which
+// branch on this to skip a face-terminal ISAPI call entirely for these.
+const CARD_ONLY_PREFIX = 'C';
+
+function isCardOnlyEmployeeNo(employeeNo) {
+  return typeof employeeNo === 'string' && employeeNo.startsWith(CARD_ONLY_PREFIX);
+}
+
+function nextLocalEmployeeNo() {
+  const rows = db.prepare("SELECT employee_no FROM employees WHERE employee_no LIKE 'C%'").all();
+  const nums = rows.map((r) => parseInt(r.employee_no.slice(1), 10)).filter(Number.isFinite);
+  return CARD_ONLY_PREFIX + String((nums.length ? Math.max(...nums) : 0) + 1);
+}
+
 /** Assigns (or clears, with cardNo=null) the physical card number an employee's DS-K2802 swipes resolve to. Throws on a card already assigned to someone else (the partial unique index on employees.card_no) — the caller should surface that as a real error, not silently overwrite who a card belongs to. */
 function setEmployeeCard(employeeNo, cardNo) {
   db.prepare('UPDATE employees SET card_no = ?, updated_at = ? WHERE employee_no = ?')
@@ -443,6 +464,6 @@ module.exports = {
   setCheckinPicture, getCheckinById, isSameSession, periodOf, getCheckoutAfter, getPollIntervalMs,
   insertPendingWorker, listPendingWorkers, getPendingWorker, deletePendingWorker,
   listEmployees, setEmployeeWage, deleteEmployeeLocal, getSetting, setSetting, payroll,
-  setEmployeeCard, employeeByCard,
+  setEmployeeCard, employeeByCard, isCardOnlyEmployeeNo, nextLocalEmployeeNo,
   insertPendingCard, listPendingCards, getPendingCard, setPendingCardNo, findArmedPendingCard, deletePendingCard,
 };
