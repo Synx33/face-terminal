@@ -414,10 +414,15 @@ app.delete('/api/employees/:employeeNo', async (req, res) => {
 app.post('/api/employees/:employeeNo/card', async (req, res) => {
   const { employeeNo } = req.params;
   const { cardNo } = req.body || {};
-  if (!cardNo || typeof cardNo !== 'string' || !cardNo.trim()) {
-    return res.status(400).json({ error: 'card number cannot be empty' });
+  if (cardNo !== undefined && typeof cardNo !== 'string') {
+    return res.status(400).json({ error: 'card number must be a string' });
   }
-  const trimmedCard = cardNo.trim();
+  // An empty string clears the assignment (e.g. a card was lost/reissued) —
+  // distinct from omitting cardNo entirely, which is a client bug.
+  const trimmedCard = cardNo !== undefined ? cardNo.trim() : undefined;
+  if (trimmedCard === undefined) {
+    return res.status(400).json({ error: 'cardNo is required (send an empty string to clear the assignment)' });
+  }
   const name = db.employeeName(employeeNo);
   if (!name) {
     return res.status(404).json({ error: `no local employee #${employeeNo}` });
@@ -445,12 +450,20 @@ app.post('/api/employees/:employeeNo/card', async (req, res) => {
   // and Card Management screen) — this endpoint only records which employee
   // that card number belongs to locally, which is all a swipe event needs
   // to resolve correctly (see db.js's insertCheckin/employeeNoForCard).
-  const deviceWarning = cardEnabled
+  const clearing = trimmedCard === '';
+  const deviceWarning = clearing
     ? null
-    : 'card device is not configured (CARD_DEVICE_IP not set) — saved locally only; a raw card swipe will still resolve to this employee once the device is added';
+    : cardEnabled
+      ? null
+      // User-facing (rendered directly in the dashboard) — Georgian, matching
+      // every other client-visible string in this app. The logger.log below
+      // stays English, matching every other server-side log line.
+      : 'ბარათის წამკითხველი ჯერ არ არის დაკონფიგურირებული — ბარათი შენახულია მხოლოდ პროგრამაში. მოწყობილობის დამატებისთანავე, ამ ბარათის მიტანისას ავტომატურად ამოიცნობა ეს თანამშრომელი.';
 
-  logger.log(`[employees] card assigned to #${employeeNo} locally${deviceWarning ? ' (device not configured)' : ' — remember to also enroll this card on the device itself, provisioning is not remote-controllable on this hardware'}`);
-  res.json({ ok: true, employeeNo, cardNo: trimmedCard, warning: deviceWarning });
+  logger.log(clearing
+    ? `[employees] card assignment cleared for #${employeeNo}`
+    : `[employees] card assigned to #${employeeNo} locally${deviceWarning ? ' (device not configured)' : ' — remember to also enroll this card on the device itself, provisioning is not remote-controllable on this hardware'}`);
+  res.json({ ok: true, employeeNo, cardNo: clearing ? null : trimmedCard, warning: deviceWarning });
 });
 
 // --- payroll -------------------------------------------------------------------

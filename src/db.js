@@ -148,7 +148,7 @@ function employeeName(employeeNo) {
 
 function listEmployees() {
   return db.prepare(`
-    SELECT e.employee_no, e.name, e.daily_wage, e.updated_at,
+    SELECT e.employee_no, e.name, e.daily_wage, e.updated_at, e.card_no,
       (SELECT c.picture_path FROM checkins c
        WHERE c.employee_no = e.employee_no AND c.picture_path IS NOT NULL
        ORDER BY c.event_time DESC LIMIT 1) AS picture_path

@@ -434,10 +434,14 @@ button:disabled { opacity: 0.5; cursor: default; transform: none; }
   font-size: 0.8rem;
 }
 
-.pending-card .pending-row {
+.pending-card .pending-row,
+.pending-card .card-row {
   display: flex;
   gap: 0.35rem;
 }
+
+.pending-card .card-row input { flex: 1; min-width: 0; }
+.pending-card .card-row button.save-card { flex-shrink: 0; }
 
 .pending-card .pending-row button.save { flex: 1; }
 

@@ -364,6 +364,10 @@ function renderWorkerCard(w) {
       : `<div class="thumb thumb-placeholder">${escapeHtml(initials(w.name))}</div>`}
     <input type="text" class="name-input" value="${escapeHtml(w.name || '')}" placeholder="სახელი" />
     <input type="text" class="wage-input" value="${w.daily_wage ?? ''}" placeholder="დღიური ანაზღაურება" inputmode="decimal" />
+    <div class="card-row">
+      <input type="text" class="card-input" value="${escapeHtml(w.card_no || '')}" placeholder="ბარათის ნომერი" />
+      <button class="save-card" title="ბარათის ნომრის შენახვა">✓</button>
+    </div>
     <div class="pending-row">
       <button class="save primary">შენახვა</button>
       <button class="discard" title="სრულად წაშლა ტერმინალიდან">წაშლა</button>
@@ -374,9 +378,39 @@ function renderWorkerCard(w) {
 
   const nameInput = el.querySelector('.name-input');
   const wageInput = el.querySelector('.wage-input');
+  const cardInput = el.querySelector('.card-input');
+  const saveCardBtn = el.querySelector('.save-card');
   const saveBtn = el.querySelector('.save');
   const removeBtn = el.querySelector('.discard');
   const statusEl = el.querySelector('.pending-status');
+
+  // Separate from the name/wage save button — a card number is physically
+  // tied to a card enrolled on the device itself (see server.js's comment
+  // on this endpoint), not something that ever needs to change alongside a
+  // name/wage edit, so it gets its own explicit save action rather than
+  // being silently included in the general save.
+  saveCardBtn.addEventListener('click', async () => {
+    saveCardBtn.disabled = true;
+    statusEl.className = 'pending-status';
+    statusEl.textContent = 'ინახება…';
+    try {
+      const res = await fetch(`/api/employees/${w.employee_no}/card`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cardNo: cardInput.value.trim() }),
+      });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || 'ვერ შესრულდა');
+      statusEl.className = result.warning ? 'pending-status err' : 'pending-status ok';
+      statusEl.textContent = result.warning || (result.cardNo ? 'ბარათი შენახულია' : 'ბარათი მოხსნილია');
+      w.card_no = result.cardNo;
+    } catch (err) {
+      statusEl.className = 'pending-status err';
+      statusEl.textContent = err.message;
+    } finally {
+      saveCardBtn.disabled = false;
+    }
+  });
 
   saveBtn.addEventListener('click', async () => {
     const name = nameInput.value.trim();
