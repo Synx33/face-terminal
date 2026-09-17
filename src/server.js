@@ -34,8 +34,25 @@ const logger = require('./logger');
 // MAC-scan discovery (that probes ISAPI too) — CARD_DEVICE_IP must be set
 // explicitly.
 const cardSdk = require('./cardSdk');
-const cardEnabled = Boolean(process.env.CARD_DEVICE_IP);
+// Was a `const` computed once at module load -- meant CARD_DEVICE_IP could
+// only ever take effect on process start, so typing an IP into Settings on
+// a deployment that started with no card device configured at all silently
+// did nothing until a restart (the comment on the settings route below used
+// to document this as accepted behavior). That's now the exact gap in the
+// way of "enter IP/user/password from Settings and see it connect" -- a
+// function that re-reads process.env every call fixes it for good, same
+// idea as deviceState.js's hasDeviceIp() for the face terminal.
+function cardDeviceConfigured() {
+  return Boolean(process.env.CARD_DEVICE_IP);
+}
 let cardConnection = null;
+// Mirrors deviceAuthState's factory (built for exactly this, per its own
+// comment, but never actually wired up here until now) -- a wrong card-
+// device password must back off automatic retries the same way a wrong
+// face-terminal password already does, instead of retrying a login every
+// 15s forever. See connectCardDeviceWithRetry() below for why this matters
+// more now that Settings can trigger a login attempt on demand.
+const cardAuthState = authState.createAuthState('card');
 
 const PORT = Number(process.env.PORT || 3070);
 
@@ -98,10 +115,62 @@ app.get('/api/device', (req, res) => {
 app.get('/api/card-device', (req, res) => {
   res.json({
     model: 'DS-K2802',
-    enabled: cardEnabled,
+    enabled: cardDeviceConfigured(),
     ip: process.env.CARD_DEVICE_IP || null,
     connected: Boolean(cardConnection),
+    auth: cardAuthState.status(),
   });
+});
+
+// Opens a short-lived, separate SDK session purely to prove the given (or,
+// if omitted, currently-saved) IP/user/password actually work end to end --
+// used by the Settings "test connection" button so "enter it and see it
+// works" doesn't just mean "hope the background retry loop eventually
+// connects". Deliberately does NOT touch the live `cardConnection` used for
+// real event listening: NET_DVR_Login_V40 supports more than one concurrent
+// session against the same device (the same reason iVMS-4200 can be open
+// on another PC while this app's own listener stays connected), so a quick
+// extra login-then-logout here has no effect on the real one.
+//
+// Gated behind the same cardAuthState backoff as the background retry loop
+// -- a "test" button being easy to click again is exactly how a wrong
+// password ends up getting hammered at the device repeatedly, which is
+// the precise failure mode that caused a real ~26-minute admin lockout on
+// this project's OTHER device (see deviceAuthState.js). Testing NEW,
+// not-yet-saved credentials is deliberately not supported here -- save
+// first (which goes through the same confirm-before-saving caution the
+// dashboard already asks for on the face terminal's password field), then
+// test what's actually saved, so there's exactly one place a login attempt
+// can be triggered from, not two.
+let cardTestInFlight = false;
+app.post('/api/card-device/test', async (req, res) => {
+  if (cardTestInFlight) return res.status(429).json({ error: 'ტესტი უკვე მიმდინარეობს' });
+  if (!cardDeviceConfigured()) {
+    return res.status(400).json({ error: 'ჯერ მიუთითეთ ბარათის მოწყობილობის IP პარამეტრებში' });
+  }
+  if (cardAuthState.isBackedOff()) {
+    const minutesLeft = Math.max(1, Math.ceil((cardAuthState.status().retryAt - Date.now()) / 60_000));
+    return res.status(503).json({ error: `ბოლო მცდელობა ვერ დაკავშირდა — ავტომატური/ხელით ტესტირება შეჩერებულია დაახლოებით ${minutesLeft} წუთით, შესაძლო დაბლოკვის თავიდან ასაცილებლად. შეასწორეთ IP/მომხმარებელი/პაროლი და შეინახეთ ხელახლა ცდისთვის.` });
+  }
+  cardTestInFlight = true;
+  try {
+    let testConn;
+    try {
+      testConn = cardSdk.connect({
+        ip: process.env.CARD_DEVICE_IP,
+        user: process.env.CARD_DEVICE_USER || process.env.DEVICE_USER,
+        pass: process.env.CARD_DEVICE_PASS || process.env.DEVICE_PASS,
+      }, () => {});
+    } catch (err) {
+      cardAuthState.recordAuthFailure();
+      return res.json({ ok: false, error: err.message });
+    }
+    cardAuthState.recordAuthSuccess();
+    try { testConn.close(); } catch { /* best-effort */ }
+    res.json({ ok: true });
+  } finally {
+    cardTestInFlight = false;
+  }
 });
 
 app.get('/api/stats', (req, res) => {
@@ -123,7 +192,7 @@ app.get('/api/settings', (req, res) => {
     currency: db.getSetting('currency', '₾'),
     pollIntervalMs: db.getPollIntervalMs(),
     checkoutAfter: db.getCheckoutAfter(),
-    cardDeviceEnabled: cardEnabled,
+    cardDeviceEnabled: cardDeviceConfigured(),
     cardDeviceIp: process.env.CARD_DEVICE_IP || null,
     cardDeviceUser: process.env.CARD_DEVICE_USER || process.env.DEVICE_USER || null,
   });
@@ -141,12 +210,11 @@ app.post('/api/settings/device-ip', (req, res) => {
 
 // Same idea as device-ip/device-credentials above, for the card-reader
 // controller. Setting an IP here for the first time (when the process
-// started with cardEnabled=false, i.e. no CARD_DEVICE_MAC/IP was in .env
-// yet) persists it but does NOT retroactively start polling this session —
-// that only happens on the next restart, same as how DEVICE_IP/MAC always
-// worked before Settings existed at all. Kept simple deliberately: this is
-// a rarely-changed, one-time-setup value, not something that needs
-// live-without-restart semantics the way poll interval or checkout time do.
+// started with no CARD_DEVICE_IP in .env at all, i.e. a brand-new site
+// deploy) now DOES take effect immediately, no restart needed —
+// cardDeviceConfigured() re-reads process.env on every call instead of
+// freezing the answer at startup, specifically so "type the IP in and see
+// it connect" works on the very first try.
 app.post('/api/settings/card-device-ip', (req, res) => {
   const { ip } = req.body || {};
   if (!ip || typeof ip !== 'string' || !/^\d{1,3}(\.\d{1,3}){3}$/.test(ip.trim())) {
@@ -154,6 +222,7 @@ app.post('/api/settings/card-device-ip', (req, res) => {
   }
   setCardDeviceIpPersisted(ip.trim());
   logger.log(`[settings] card device IP manually set to ${ip.trim()}`);
+  cardAuthState.resetBackoff(); // give the corrected IP an immediate attempt, not a leftover backoff meant for the old one
   reconnectCardDevice();
   res.json({ ok: true, cardDeviceIp: ip.trim() });
 });
@@ -189,6 +258,7 @@ app.post('/api/settings/card-device-credentials', (req, res) => {
   }
   setCardDeviceCredentialsPersisted({ user: newUser, pass: newPass });
   logger.log(`[settings] card device credentials updated${newUser ? ` (user: ${newUser})` : ''}${newPass ? ' (password changed)' : ''}`);
+  cardAuthState.resetBackoff(); // same reasoning as card-device-ip above
   reconnectCardDevice();
   res.json({ ok: true, cardDeviceUser: process.env.CARD_DEVICE_USER || process.env.DEVICE_USER || null });
 });
@@ -352,6 +422,116 @@ app.delete('/api/pending-workers/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+// --- card enrollment: press button, wait for tap, name it after --------------
+// Same "capture first, name later" shape as pending-workers above, but the
+// "capture" here isn't instant (there's no photo to grab on demand) — it
+// has to wait for whatever the physical swipe that happens sometime after
+// the button is pressed. So a pending_cards row starts with card_no=NULL
+// the moment the button is pressed, onCardEvent() (see the card device
+// lifecycle section below) fills it in the moment a real tap arrives, and
+// the dashboard just polls this row until card_no shows up.
+const PENDING_CARD_TIMEOUT_MS = 60_000; // matches the UX: this is a "stand there and tap it now" action, not something left armed indefinitely
+const pendingCardTimers = new Map(); // id -> setTimeout handle, so a real capture/explicit cancel can cancel the auto-expiry
+
+function clearPendingCardTimer(id) {
+  const timer = pendingCardTimers.get(id);
+  if (timer) {
+    clearTimeout(timer);
+    pendingCardTimers.delete(id);
+  }
+}
+
+app.post('/api/pending-cards', (req, res) => {
+  if (!cardDeviceConfigured()) {
+    return res.status(400).json({ error: 'ბარათის მოწყობილობა არ არის კონფიგურირებული — მიუთითეთ IP/მომხმარებელი/პაროლი პარამეტრებში' });
+  }
+  // Idempotent: a double-click, or reopening the tab mid-wait, resumes the
+  // same still-armed capture instead of silently arming a second one that
+  // would only ever catch a swipe if the first one is cancelled first.
+  let pending = db.findArmedPendingCard();
+  if (!pending) {
+    pending = db.insertPendingCard();
+    const id = pending.id;
+    pendingCardTimers.set(id, setTimeout(() => {
+      pendingCardTimers.delete(id);
+      const current = db.getPendingCard(id);
+      if (current && !current.card_no) db.deletePendingCard(id); // never tapped -- stop listening for it
+    }, PENDING_CARD_TIMEOUT_MS));
+  }
+  res.json(pending);
+});
+
+app.get('/api/pending-cards', (req, res) => {
+  res.json(db.listPendingCards());
+});
+
+app.get('/api/pending-cards/:id', (req, res) => {
+  const pending = db.getPendingCard(Number(req.params.id));
+  if (!pending) return res.status(404).json({ error: 'no such pending capture' });
+  res.json(pending);
+});
+
+app.post('/api/pending-cards/:id/claim', async (req, res) => {
+  const id = Number(req.params.id);
+  const { name, dailyWage } = req.body || {};
+  if (!name || typeof name !== 'string' || !name.trim()) {
+    return res.status(400).json({ error: 'name is required' });
+  }
+  if (dailyWage !== undefined && dailyWage !== null &&
+      !(Number.isFinite(Number(dailyWage)) && Number(dailyWage) >= 0)) {
+    return res.status(400).json({ error: 'daily wage must be a non-negative number' });
+  }
+  // This still creates the employee_no on the FACE terminal (enrollEmployee
+  // always does — employee_no is that device's own counter, the one
+  // identity both devices key off of), just with no photo. A card-only
+  // worker (no face at all) is a real, intended outcome here, not a
+  // degraded case.
+  if (rejectIfAuthBackedOff(res)) return;
+  const pending = db.getPendingCard(id);
+  if (!pending) return res.status(404).json({ error: 'no such pending capture' });
+  if (!pending.card_no) return res.status(409).json({ error: 'ბარათი ჯერ არ დაფიქსირებულა — მიადეთ ბარათი წამკითხველს და მოიცადეთ' });
+
+  try {
+    const result = await enrollEmployee({
+      name: name.trim(),
+      jpegBuffer: null,
+      dailyWage: dailyWage === undefined || dailyWage === null ? null : Number(dailyWage),
+    });
+    try {
+      db.setEmployeeCard(result.employeeNo, pending.card_no);
+    } catch (err) {
+      // The employee was already created successfully just above (real
+      // employee_no on the device) -- only the card assignment itself
+      // collided with an existing owner (partial unique index on
+      // employees.card_no, almost certainly the same physical card tapped
+      // and claimed once already). Same "local DB is authoritative, no
+      // rollback" principle as the /card endpoint above: leave the new
+      // employee as-is rather than deleting them over an unrelated field,
+      // and surface the real problem instead of a misleading "could not
+      // create user" message.
+      clearPendingCardTimer(id);
+      db.deletePendingCard(id);
+      return res.status(409).json({ error: `თანამშრომელი #${result.employeeNo} შეიქმნა, მაგრამ ეს ბარათი უკვე მინიჭებული აქვს სხვას: ${err.message}` });
+    }
+    clearPendingCardTimer(id);
+    db.deletePendingCard(id);
+    logger.log(`[enroll] claimed pending card #${id} (${pending.card_no}) as #${result.employeeNo} ${result.name}`);
+    res.json({ ...result, cardNo: pending.card_no });
+  } catch (err) {
+    logger.error('card claim failed:', err.message);
+    res.status(502).json({ error: `could not create user on terminal: ${err.message}` });
+  }
+});
+
+app.delete('/api/pending-cards/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const pending = db.getPendingCard(id);
+  if (!pending) return res.status(404).json({ error: 'no such pending capture' });
+  clearPendingCardTimer(id);
+  db.deletePendingCard(id);
+  res.json({ ok: true });
+});
+
 // --- worker management (list / rename / wage / remove) ------------------------
 app.get('/api/employees', (req, res) => {
   res.json(db.listEmployees());
@@ -453,7 +633,7 @@ app.post('/api/employees/:employeeNo/card', async (req, res) => {
   const clearing = trimmedCard === '';
   const deviceWarning = clearing
     ? null
-    : cardEnabled
+    : cardDeviceConfigured()
       ? null
       // User-facing (rendered directly in the dashboard) — Georgian, matching
       // every other client-visible string in this app. The logger.log below
@@ -612,7 +792,7 @@ function restartPolling() {
   pollTimer = startPolling(db.getPollIntervalMs(), onNewCheckin, onPollError);
 }
 
-// --- card device lifecycle (only runs at all if cardEnabled) ---------------
+// --- card device lifecycle (only runs at all if cardDeviceConfigured()) ----
 // Push-based, not polled: a persistent HCNetSDK session subscribes to
 // real-time alarms and onCardEvent() fires directly from that callback,
 // so there's no poll-interval/tick/backoff machinery to mirror from the
@@ -639,6 +819,24 @@ function onCardEvent(event) {
   // is a directly-verified signal, unlike guessing at which dwMajor/dwMinor
   // values specifically mean "this was a real swipe."
   if (!event.cardNo) return;
+
+  // "Add card" flow (press button, wait for tap, then name it): while a
+  // pending_cards row is armed (card_no still NULL), the NEXT real swipe is
+  // that new/unassigned card being enrolled, not a check-in — it belongs to
+  // nobody yet, so logging it as a checkin would create a permanently
+  // employee_no-less row (insertCheckin resolves employeeNo from cardNo at
+  // INSERT time, not on every later read, so it could never retroactively
+  // attach to the employee this card is about to be assigned to). Divert it
+  // into the pending capture instead and stop -- setPendingCardNo only
+  // succeeds if the row is still unfilled, so a race against a second
+  // swipe/second armed row can't double-assign one tap.
+  const armed = db.findArmedPendingCard();
+  if (armed && db.setPendingCardNo(armed.id, event.cardNo)) {
+    clearPendingCardTimer(armed.id);
+    logger.log(`[card] captured card ${event.cardNo} for pending enrollment #${armed.id}`);
+    return;
+  }
+
   const insertedId = db.insertCheckin({
     eventTime: event.eventTime, // already a formatted "+04:00" string (cardSdk.js's isoWithOffset), not a Date
     cardNo: event.cardNo,
@@ -655,18 +853,35 @@ async function connectCardDeviceWithRetry() {
   cardConnectInFlight = true;
   const RETRY_MS = 15_000;
   try {
-    while (cardEnabled && !cardConnection) {
+    while (cardDeviceConfigured() && !cardConnection) {
+      // A login that's currently backed off (see cardAuthState above) must
+      // not be retried at the normal 15s cadence -- that's the exact
+      // "hammer a possibly-locked-out login every few seconds" pattern that
+      // caused a real ~26-minute lockout on this project's other device.
+      // Poll the backoff state itself at a slower, harmless cadence instead
+      // so it picks up either the backoff naturally expiring or a
+      // Settings-triggered resetBackoff() promptly.
+      if (cardAuthState.isBackedOff()) {
+        await new Promise((r) => setTimeout(r, RETRY_MS));
+        continue;
+      }
       try {
         cardConnection = cardSdk.connect({
           ip: process.env.CARD_DEVICE_IP,
           user: process.env.CARD_DEVICE_USER || process.env.DEVICE_USER,
           pass: process.env.CARD_DEVICE_PASS || process.env.DEVICE_PASS,
         }, onCardEvent);
+        cardAuthState.recordAuthSuccess();
         logger.log(`[card] connected to card device at ${process.env.CARD_DEVICE_IP}`);
       } catch (err) {
-        logger.error(`[card] connection failed (${err.message}); retrying in ${RETRY_MS / 1000}s`);
+        cardAuthState.recordAuthFailure();
         cardConnection = null;
-        await new Promise((r) => setTimeout(r, RETRY_MS));
+        if (cardAuthState.isBackedOff()) {
+          logger.error(`[card] connection failed (${err.message}) — pausing automatic retries, possible bad credentials/lockout risk. Fix in Settings to retry immediately.`);
+        } else {
+          logger.error(`[card] connection failed (${err.message}); retrying in ${RETRY_MS / 1000}s`);
+          await new Promise((r) => setTimeout(r, RETRY_MS));
+        }
       }
     }
   } finally {
@@ -684,7 +899,7 @@ function reconnectCardDevice() {
     try { cardConnection.close(); } catch { /* best-effort */ }
     cardConnection = null;
   }
-  if (cardEnabled) connectCardDeviceWithRetry();
+  if (cardDeviceConfigured()) connectCardDeviceWithRetry();
 }
 
 server.listen(PORT, async () => {
@@ -703,12 +918,17 @@ server.listen(PORT, async () => {
 
   // Deliberately NOT awaited — an optional second device must never delay
   // or block startup of the (mandatory) face terminal path below.
-  if (cardEnabled) {
-    connectCardDeviceWithRetry();
-    // Periodic forced reconnect — see reconnectCardDevice's comment on why
-    // this exists instead of reacting to a verified disconnect signal.
-    setInterval(reconnectCardDevice, 6 * 60 * 60 * 1000); // every 6h
-  }
+  // Always scheduled now, even if no CARD_DEVICE_IP is set yet -- both
+  // functions already no-op cleanly via cardDeviceConfigured() when it
+  // isn't, and this is what lets a card device configured LATER (typed into
+  // Settings on a running process, e.g. rolling this app out to a new site
+  // whose controller isn't wired up on day one) actually start connecting
+  // without a restart, instead of only ever being armed at the moment the
+  // process happened to start.
+  if (cardDeviceConfigured()) connectCardDeviceWithRetry();
+  // Periodic forced reconnect — see reconnectCardDevice's comment on why
+  // this exists instead of reacting to a verified disconnect signal.
+  setInterval(reconnectCardDevice, 6 * 60 * 60 * 1000); // every 6h
 
   await resolveDeviceWithRetry();
   syncEmployees();

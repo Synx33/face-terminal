@@ -59,6 +59,14 @@
           <div class="pending-grid" id="pendingGrid"></div>
         </div>
 
+        <div class="subsection" id="cardEnrollSection" hidden>
+          <h2>ახალი ბარათის დამატება</h2>
+          <p class="panel-hint">დააჭირეთ ღილაკს და შემდეგ მიადეთ ბარათი წამკითხველს — ნომერი ავტომატურად დაფიქსირდება, შემდეგ მიუთითეთ სახელი და, სურვილისამებრ, დღიური ანაზღაურება.</p>
+          <button id="listenCardBtn" class="primary">ბარათის მოლოდინი</button>
+          <div class="enroll-msg" id="listenCardMsg"></div>
+          <div class="pending-grid" id="pendingCardGrid"></div>
+        </div>
+
         <div class="subsection">
           <h2>რეგისტრირებული თანამშრომლები</h2>
           <p class="panel-hint">შეცვალეთ სახელი ან დღიური ანაზღაურება, ან წაშალეთ ვინმე — წაშლისას იშლება მისი სახეც და წვდომაც თავად ტერმინალიდან, არა მხოლოდ ამ დაფიდან.</p>
@@ -122,6 +130,43 @@
           <button id="saveCredsBtn">შენახვა</button>
         </div>
         <div class="enroll-msg" id="credsMsg"></div>
+      </div>
+
+      <div class="subsection">
+        <h3>ბარათის წამკითხველი (DS-K2802)</h3>
+        <p class="hint-text">არასავალდებულო მეორე მოწყობილობა — ბარათის წამკითხველის კონტროლერი. მიუთითეთ მისი IP, მომხმარებელი და პაროლი, შემდეგ გადაამოწმეთ კავშირი ღილაკით.</p>
+        <div class="field-row">
+          <label for="cardIpInput">IP მისამართი</label>
+          <input type="text" id="cardIpInput" placeholder="10.10.11.233" />
+        </div>
+        <div class="field-row">
+          <span id="cardIpMode" class="hint-text"></span>
+          <button id="saveCardIpBtn">შენახვა</button>
+        </div>
+        <div class="enroll-msg" id="cardIpMsg"></div>
+
+        <div class="field-row">
+          <label for="cardUserInput">მომხმარებელი</label>
+          <input type="text" id="cardUserInput" placeholder="admin" />
+        </div>
+        <div class="field-row">
+          <label for="cardPassInput">პაროლი</label>
+          <input type="password" id="cardPassInput" placeholder="უცვლელი, თუ ცარიელია" autocomplete="off" />
+          <button id="toggleCardPassBtn" class="icon-btn" type="button" title="პაროლის ჩვენება" aria-label="პაროლის ჩვენება">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
+        </div>
+        <div class="field-row">
+          <span class="hint-text">ბარათის კონტროლერის ადმინის მომხმარებელი და პაროლი.</span>
+          <button id="saveCardCredsBtn">შენახვა</button>
+        </div>
+        <div class="enroll-msg" id="cardCredsMsg"></div>
+
+        <div class="field-row">
+          <button id="testCardConnBtn">დაკავშირების ტესტი</button>
+          <span id="cardConnStatus" class="hint-text"></span>
+        </div>
+        <div class="enroll-msg" id="cardTestMsg"></div>
       </div>
 
       <div class="subsection">

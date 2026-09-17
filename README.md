@@ -97,8 +97,9 @@ Or as a systemd service — see `face-terminal.service` for the unit file
 | `CHECKOUT_AFTER` | Initial checkout-time boundary, "HH:MM" 24h (default 19:00) — same as above, overridable live from Settings. |
 | `RECEIVER_IP` | Hostname/IP shown in the startup log line for the dashboard URL (cosmetic only). |
 | `FACE_TERMINAL_DATA` | Where the SQLite DB, snapshots, backups, and log file live. |
-| `CARD_DEVICE_IP` | Optional second device — a DS-K2802 card-reader controller. Leave blank to run with just the face terminal (the default). No auto-discovery for this one (see below) — must be set explicitly. |
+| `CARD_DEVICE_IP` | Optional second device — a DS-K2802 card-reader controller. Leave blank to run with just the face terminal (the default). No auto-discovery for this one (see below) — must be set explicitly. All three of these (plus credentials) can also be entered straight from the dashboard's Settings dialog, with a live "test connection" button — editing `.env` by hand is not required. |
 | `CARD_DEVICE_USER` / `CARD_DEVICE_PASS` | Card controller's admin login. Defaults to `DEVICE_USER`/`DEVICE_PASS` if left blank. |
+| `CARD_SDK_LIB_DIR` / `LD_LIBRARY_PATH` | Linux only — where this box's own copy of Hikvision's Linux SDK build lives. See "Setup" under the card-reader section below. |
 
 ## What it does
 
@@ -125,21 +126,25 @@ The dashboard is organized into three tabs — **ჩანაწერები*
   device: a live alarm fired, and every field of the decoded event matched
   reality exactly (the actual date/time, the actual logged-in username).
 
-  **Card/person enrollment has to happen on the device itself** (its own
-  menu, or iVMS-4200's Person and Card Management screen) — confirmed live
-  that this device does not support remote card provisioning via SDK (every
-  command tried failed consistently, unlike the event-subscription
-  mechanism, which worked correctly on the first attempt — a firmware
-  limitation, not a gap in this code). After enrolling a card on the device,
-  tell the dashboard who it belongs to via
-  `POST /api/employees/:employeeNo/card` — a swipe resolves to that worker
-  locally from then on, entirely independent of anything on the device
-  side. Since the DS-K2802 has no camera, a card check-in never triggers a
-  photo capture, unlike the face terminal.
+  **Card/person enrollment**: cards can be enrolled straight from this
+  dashboard now too — Workers tab → "ბარათის მოლოდინი" ("wait for card"),
+  tap the physical card, then name it, mirroring the face terminal's own
+  "capture first, name later" flow. (Remote card *provisioning* — pushing a
+  card onto the device itself via SDK — is still not supported: confirmed
+  live that this firmware rejects every such command consistently, unlike
+  the event-subscription mechanism, which worked correctly on the first
+  attempt. Not a gap in this code, a firmware limitation. This only matters
+  if a card needs to unlock a physical door/relay on the controller itself —
+  enrolling it here is enough for attendance tracking regardless.) A swipe
+  resolves to the right worker locally via
+  `employees.card_no`/`POST /api/employees/:employeeNo/card`, entirely
+  independent of anything on the device side. Since the DS-K2802 has no
+  camera, a card check-in never triggers a photo capture, unlike the face
+  terminal.
 
-  **Setup**: this needs Hikvision's own Windows "Device Network SDK" DLLs to
-  actually load on the site laptop — `vendor/hcnetsdk/win64/` is
-  `.gitignore`d (deliberately not committed to this public repo: it's
+  **Setup (Windows)**: this needs Hikvision's own Windows "Device Network
+  SDK" DLLs to actually load on the site laptop — `vendor/hcnetsdk/win64/`
+  is `.gitignore`d (deliberately not committed to this public repo: it's
   Hikvision's proprietary compiled SDK, sourced during development from an
   unofficial mirror rather than Hikvision's own account-gated download
   portal, and that's not this project's call to make about what a public
@@ -156,6 +161,19 @@ The dashboard is organized into three tabs — **ჩანაწერები*
      platform-specific — a laptop's `node_modules` bundled from this dev box
      only has the Linux build) — `windows/update.ps1` already falls back to
      this automatically if a dependency is missing.
+
+  **Setup (Linux)**: same idea, but pointed at wherever this box's own copy
+  of the Linux SDK build lives (e.g. `/opt/hiksdk/<version>/lib`, installed
+  outside this repo — never committed here, same reasoning as the Windows
+  DLLs above). Set two variables in `.env`:
+  ```
+  CARD_SDK_LIB_DIR=/opt/hiksdk/<version>/lib
+  LD_LIBRARY_PATH=/opt/hiksdk/<version>/lib:/opt/hiksdk/<version>/lib/HCNetSDKCom
+  ```
+  `CARD_SDK_LIB_DIR` tells `cardSdk.js` where to `koffi.load()`
+  `libhcnetsdk.so` itself; `LD_LIBRARY_PATH` is still needed on top of that
+  so the dynamic linker can find *that* library's own further dependencies
+  (`libHCCore.so`, the `HCNetSDKCom/*` plugins, etc.) at load time.
 - **Check-in/check-out** — this terminal has no in/out mode selector, so
   direction is derived from time of day: any scan before the configured
   checkout time (default 19:00) is "in", the first scan at or after it is

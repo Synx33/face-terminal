@@ -49,6 +49,21 @@ db.exec(`
     picture_path TEXT NOT NULL,
     created_at   TEXT NOT NULL
   );
+
+  -- Same "capture first, name later" idea as pending_workers, but for the
+  -- DS-K2802 card reader: a row is created the instant someone presses
+  -- "wait for card" (card_no still NULL), and gets filled in by the next
+  -- real swipe onCardEvent() sees while this row is the oldest unfilled one
+  -- -- see server.js's findArmedPendingCard()/onCardEvent. Kept as its own
+  -- table rather than reusing pending_workers because there's no photo here
+  -- and the row can legitimately sit around with card_no still NULL for a
+  -- while (waiting for the physical tap), unlike a pending_workers row which
+  -- always has its picture_path from the moment it's created.
+  CREATE TABLE IF NOT EXISTS pending_cards (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    card_no    TEXT,
+    created_at TEXT NOT NULL
+  );
 `);
 
 // picture_path was added after the table already existed in production —
@@ -369,6 +384,41 @@ function deletePendingWorker(id) {
   db.prepare('DELETE FROM pending_workers WHERE id = ?').run(id);
 }
 
+function insertPendingCard() {
+  const result = db.prepare('INSERT INTO pending_cards (card_no, created_at) VALUES (NULL, ?)')
+    .run(new Date().toISOString());
+  return { id: Number(result.lastInsertRowid), card_no: null };
+}
+
+function listPendingCards() {
+  return db.prepare('SELECT id, card_no, created_at FROM pending_cards ORDER BY created_at ASC').all();
+}
+
+function getPendingCard(id) {
+  return db.prepare('SELECT id, card_no, created_at FROM pending_cards WHERE id = ?').get(id);
+}
+
+// Only ever fills in a still-empty row -- returns false (and touches
+// nothing) if this row was already claimed/cancelled/filled between when
+// the caller looked it up and now, so onCardEvent can't double-assign one
+// physical swipe to two different in-flight pending captures.
+function setPendingCardNo(id, cardNo) {
+  const result = db.prepare('UPDATE pending_cards SET card_no = ? WHERE id = ? AND card_no IS NULL').run(cardNo, id);
+  return result.changes > 0;
+}
+
+// The oldest still-unfilled capture -- "oldest" so that if an admin somehow
+// starts a second capture before finishing the first (e.g. two browser tabs),
+// the next real swipe resolves the older, presumably-still-open one first
+// rather than an arbitrary one.
+function findArmedPendingCard() {
+  return db.prepare("SELECT id, card_no, created_at FROM pending_cards WHERE card_no IS NULL ORDER BY created_at ASC LIMIT 1").get();
+}
+
+function deletePendingCard(id) {
+  db.prepare('DELETE FROM pending_cards WHERE id = ?').run(id);
+}
+
 // Daily-wage payroll: counts DISTINCT calendar days a person showed up at
 // all in [start, end] (inclusive, "YYYY-MM-DD" strings) x their daily wage.
 // Deliberately simple — no hours/overtime math, because the terminal has no
@@ -394,4 +444,5 @@ module.exports = {
   insertPendingWorker, listPendingWorkers, getPendingWorker, deletePendingWorker,
   listEmployees, setEmployeeWage, deleteEmployeeLocal, getSetting, setSetting, payroll,
   setEmployeeCard, employeeByCard,
+  insertPendingCard, listPendingCards, getPendingCard, setPendingCardNo, findArmedPendingCard, deletePendingCard,
 };

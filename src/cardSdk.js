@@ -29,12 +29,15 @@
 //     locally (employees.card_no, already built), so provisioning can stay
 //     a manual, device-side step. See README for the operator workflow.
 //
-// Windows-only in practice (the actual deployment target) -- vendor/hcnetsdk
-// ships the real Windows DLLs (HCNetSDK.dll + HCCore.dll + OpenSSL 1.0
-// libs + HCNetSDKCom/* plugins, sourced and verified working live). Linux
-// is supported here only for this dev box's own testing convenience via
-// CARD_SDK_LIB_DIR, pointing at a separately-obtained (not vendored --
-// see README) copy of the Linux .so build.
+// Most deployments of this app are Windows laptops -- vendor/hcnetsdk ships
+// the real Windows DLLs there (HCNetSDK.dll + HCCore.dll + OpenSSL 1.0 libs
+// + HCNetSDKCom/* plugins, sourced and verified working live). This
+// particular site's box runs Linux, though, and IS a real production
+// deployment, not just dev-box convenience -- CARD_SDK_LIB_DIR (+
+// LD_LIBRARY_PATH for the .so's own further dependencies) points at that
+// box's own separately-installed copy of the official Linux SDK build
+// (kept outside this repo entirely, same reasoning as vendor/hcnetsdk/win64
+// being gitignored: third-party vendor binaries, never committed here).
 
 const path = require('path');
 const os = require('os');

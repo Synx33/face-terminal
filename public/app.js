@@ -289,6 +289,151 @@ captureBtn.addEventListener('click', async () => {
   }
 });
 
+// --- add card: press button, wait for tap, name it after --------------------
+// Same shape as pending-workers above, except the "capture" step can't
+// happen synchronously on click (there's no photo to grab on demand) — the
+// server arms a listener and this just polls the one row until the real
+// swipe (via cardSdk's push-based alarm callback, see server.js) fills in
+// its card_no.
+
+const listenCardBtn = document.getElementById('listenCardBtn');
+const listenCardMsg = document.getElementById('listenCardMsg');
+const pendingCardGrid = document.getElementById('pendingCardGrid');
+
+function renderPendingCardCapture(pending) {
+  const el = document.createElement('div');
+  el.className = 'pending-card';
+  el.dataset.id = pending.id;
+  let pollTimer = null;
+
+  async function cancel() {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    discardDisabled(true);
+    await fetch(`/api/pending-cards/${pending.id}`, { method: 'DELETE' });
+    el.remove();
+  }
+
+  function discardDisabled(v) {
+    const btn = el.querySelector('.discard');
+    if (btn) btn.disabled = v;
+  }
+
+  function renderWaiting() {
+    el.innerHTML = `
+      <div class="thumb thumb-placeholder">🪪</div>
+      <div class="pending-status">ველოდებით ბარათს… მიადეთ წამკითხველს</div>
+      <div class="pending-row">
+        <button class="discard">გაუქმება</button>
+      </div>
+    `;
+    el.querySelector('.discard').addEventListener('click', cancel);
+  }
+
+  function renderCaptured(cardNo) {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    el.innerHTML = `
+      <div class="thumb thumb-placeholder">🪪</div>
+      <div class="pending-status ok">ბარათი დაფიქსირდა: ${escapeHtml(cardNo)}</div>
+      <input type="text" class="name-input" placeholder="სახელი" />
+      <input type="text" class="wage-input" placeholder="დღიური ანაზღაურება (არასავალდებულო)" inputmode="decimal" />
+      <div class="pending-row">
+        <button class="save primary">შენახვა</button>
+        <button class="discard">×</button>
+      </div>
+      <div class="pending-status claim-status"></div>
+    `;
+    const nameInput = el.querySelector('.name-input');
+    const wageInput = el.querySelector('.wage-input');
+    const saveBtn = el.querySelector('.save');
+    const discardBtn = el.querySelector('.discard');
+    const statusEl = el.querySelector('.claim-status');
+
+    const save = async () => {
+      const name = nameInput.value.trim();
+      if (!name) { nameInput.focus(); return; }
+      const wageText = wageInput.value.trim();
+      if (wageText && (!Number.isFinite(Number(wageText)) || Number(wageText) < 0)) {
+        statusEl.className = 'pending-status claim-status err';
+        statusEl.textContent = 'დღიური ანაზღაურება უნდა იყოს არაუარყოფითი რიცხვი';
+        wageInput.focus();
+        return;
+      }
+      saveBtn.disabled = true;
+      discardBtn.disabled = true;
+      statusEl.className = 'pending-status claim-status';
+      statusEl.textContent = 'ინახება…';
+      try {
+        const res = await fetch(`/api/pending-cards/${pending.id}/claim`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, dailyWage: wageText ? Number(wageText) : null }),
+        });
+        const result = await res.json();
+        if (!res.ok) throw new Error(result.error || 'ვერ შესრულდა');
+        el.remove();
+        loadWorkers();
+        loadEmployeeFilterOptions();
+      } catch (err) {
+        statusEl.className = 'pending-status claim-status err';
+        statusEl.textContent = err.message;
+        saveBtn.disabled = false;
+        discardBtn.disabled = false;
+      }
+    };
+    saveBtn.addEventListener('click', save);
+    nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
+    wageInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
+    discardBtn.addEventListener('click', cancel);
+  }
+
+  async function poll() {
+    try {
+      const res = await fetch(`/api/pending-cards/${pending.id}`);
+      if (res.status === 404) {
+        // auto-expired server-side (nobody tapped a card within the wait window)
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        el.remove();
+        return;
+      }
+      const p = await res.json();
+      if (p.card_no) renderCaptured(p.card_no);
+    } catch { /* transient -- next tick retries */ }
+  }
+
+  if (pending.card_no) {
+    renderCaptured(pending.card_no);
+  } else {
+    renderWaiting();
+    pollTimer = setInterval(poll, 1000);
+  }
+
+  return el;
+}
+
+async function loadPendingCards() {
+  const res = await fetch('/api/pending-cards');
+  const list = await res.json();
+  pendingCardGrid.innerHTML = '';
+  for (const p of list) pendingCardGrid.appendChild(renderPendingCardCapture(p));
+}
+
+listenCardBtn.addEventListener('click', async () => {
+  listenCardBtn.disabled = true;
+  listenCardMsg.className = 'enroll-msg';
+  listenCardMsg.textContent = '';
+  try {
+    const res = await fetch('/api/pending-cards', { method: 'POST' });
+    const pending = await res.json();
+    if (!res.ok) throw new Error(pending.error || 'ვერ შესრულდა');
+    pendingCardGrid.appendChild(renderPendingCardCapture(pending));
+  } catch (err) {
+    listenCardMsg.className = 'enroll-msg err';
+    listenCardMsg.textContent = err.message;
+  } finally {
+    listenCardBtn.disabled = false;
+  }
+});
+
 async function loadDeviceInfo() {
   try {
     const res = await fetch('/api/device');
@@ -320,6 +465,10 @@ async function loadCardDeviceInfo() {
     const res = await fetch('/api/card-device');
     const info = await res.json();
     const subtitleEl = document.getElementById('cardDeviceSubtitle');
+    // The "add card" flow in Workers only makes sense once a card device is
+    // actually configured — hidden entirely otherwise, same "invisible
+    // unless opted in" rule as the header subtitle.
+    document.getElementById('cardEnrollSection').hidden = !info.enabled;
     if (!info.enabled) {
       subtitleEl.hidden = true;
       return;
@@ -328,10 +477,22 @@ async function loadCardDeviceInfo() {
     if (info.connected) {
       subtitleEl.textContent = `${info.model} · ${info.ip} · დაკავშირებულია`;
       subtitleEl.classList.remove('subtitle-err');
+    } else if (info.auth?.failing) {
+      const minutesLeft = Math.max(1, Math.ceil((info.auth.retryAt - Date.now()) / 60_000));
+      subtitleEl.textContent = `${info.model} · ავტორიზაცია ვერ მოხერხდა (სცადეთ ${minutesLeft} წთ-ში ან შეასწორეთ პაროლი პარამეტრებში)`;
+      subtitleEl.classList.add('subtitle-err');
     } else {
       subtitleEl.textContent = `${info.model} · კავშირი გაწყვეტილია`;
       subtitleEl.classList.add('subtitle-err');
     }
+    // Same ambient status, mirrored into the Settings panel next to the
+    // "Test connection" button, so opening Settings doesn't require also
+    // reading the (easy to miss) header subtitle to know the live state.
+    cardConnStatus.textContent = info.connected
+      ? 'ამჟამად: დაკავშირებულია'
+      : info.auth?.failing
+        ? 'ამჟამად: ავტორიზაცია ვერ მოხერხდა'
+        : 'ამჟამად: არ არის დაკავშირებული';
   } catch {
     // cosmetic only
   }
@@ -600,6 +761,15 @@ const deviceUserInput = document.getElementById('deviceUserInput');
 const devicePassInput = document.getElementById('devicePassInput');
 const credsMsg = document.getElementById('credsMsg');
 
+const cardIpInput = document.getElementById('cardIpInput');
+const cardIpMode = document.getElementById('cardIpMode');
+const cardIpMsg = document.getElementById('cardIpMsg');
+const cardUserInput = document.getElementById('cardUserInput');
+const cardPassInput = document.getElementById('cardPassInput');
+const cardCredsMsg = document.getElementById('cardCredsMsg');
+const cardConnStatus = document.getElementById('cardConnStatus');
+const cardTestMsg = document.getElementById('cardTestMsg');
+
 const siteNameInput = document.getElementById('siteNameInput');
 const currencyInput = document.getElementById('currencyInput');
 const pollIntervalInput = document.getElementById('pollIntervalInput');
@@ -619,6 +789,9 @@ async function loadSettings() {
   if (s.deviceUser) deviceUserInput.value = s.deviceUser;
   // devicePassInput is deliberately never pre-filled — the real password
   // is never sent to the browser at all, only ever written, never read.
+  if (s.cardDeviceIp) cardIpInput.value = s.cardDeviceIp;
+  cardIpMode.textContent = s.cardDeviceEnabled ? '(კონფიგურირებულია)' : '(ჯერ არ არის მითითებული)';
+  if (s.cardDeviceUser) cardUserInput.value = s.cardDeviceUser;
   siteNameInput.value = s.siteName;
   currencyInput.value = s.currency;
   pollIntervalInput.value = s.pollIntervalMs;
@@ -768,6 +941,100 @@ document.getElementById('togglePassBtn').addEventListener('click', () => {
   devicePassInput.type = showing ? 'password' : 'text';
 });
 
+// --- card device settings (IP / credentials / test connection) --------------
+
+document.getElementById('saveCardIpBtn').addEventListener('click', async () => {
+  const ip = cardIpInput.value.trim();
+  cardIpMsg.className = 'enroll-msg';
+  cardIpMsg.textContent = 'ინახება…';
+  try {
+    const res = await fetch('/api/settings/card-device-ip', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ip }),
+    });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.error || 'ვერ შესრულდა');
+    cardIpMsg.className = 'enroll-msg ok';
+    cardIpMsg.textContent = `ახლა გამოიყენება ${result.cardDeviceIp}`;
+    cardIpMode.textContent = '(კონფიგურირებულია)';
+    loadCardDeviceInfo();
+  } catch (err) {
+    cardIpMsg.className = 'enroll-msg err';
+    cardIpMsg.textContent = err.message;
+  }
+});
+
+document.getElementById('saveCardCredsBtn').addEventListener('click', async () => {
+  const user = cardUserInput.value.trim();
+  const pass = cardPassInput.value; // not trimmed — a leading/trailing space could be a real (if unusual) part of a password
+  if (!user) {
+    cardCredsMsg.className = 'enroll-msg err';
+    cardCredsMsg.textContent = 'მომხმარებლის სახელი არ შეიძლება იყოს ცარიელი';
+    return;
+  }
+  // Same caution as the face terminal's own saveCredsBtn above — a wrong
+  // password risks the device locking out its admin login for an extended
+  // period, so this is never sent to the device speculatively without a
+  // deliberate confirmation first.
+  if (pass && !confirm('დარწმუნებული ხართ, რომ პაროლი სწორად შეიყვანეთ? არასწორმა პაროლმა შეიძლება დაბლოკოს კონტროლერის ადმინის შესვლა ხანგრძლივი დროით.')) {
+    return;
+  }
+  cardCredsMsg.className = 'enroll-msg';
+  cardCredsMsg.textContent = 'ინახება…';
+  try {
+    const res = await fetch('/api/settings/card-device-credentials', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user, pass: pass || undefined }),
+    });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.error || 'ვერ შესრულდა');
+    cardCredsMsg.className = 'enroll-msg ok';
+    cardCredsMsg.textContent = 'შენახულია.';
+  } catch (err) {
+    cardCredsMsg.className = 'enroll-msg err';
+    cardCredsMsg.textContent = err.message;
+  }
+});
+
+document.getElementById('toggleCardPassBtn').addEventListener('click', () => {
+  const showing = cardPassInput.type === 'text';
+  cardPassInput.type = showing ? 'password' : 'text';
+});
+
+// Performs a real login attempt against the card controller with whatever
+// is CURRENTLY SAVED (not whatever's sitting unsaved in the fields above —
+// save first) — this is the one deliberate, user-triggered way to actually
+// prove "IP/user/password work end to end" instead of just hoping the
+// background retry loop eventually connects. Backed off server-side the
+// same way a bad password backs off the automatic retry loop, so clicking
+// this repeatedly can't itself hammer the device into a lockout.
+document.getElementById('testCardConnBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('testCardConnBtn');
+  btn.disabled = true;
+  cardTestMsg.className = 'enroll-msg';
+  cardTestMsg.textContent = 'დაკავშირება…';
+  try {
+    const res = await fetch('/api/card-device/test', { method: 'POST' });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.error || 'ვერ შესრულდა');
+    if (result.ok) {
+      cardTestMsg.className = 'enroll-msg ok';
+      cardTestMsg.textContent = 'წარმატებული დაკავშირება — მუშაობს სრულყოფილად.';
+    } else {
+      cardTestMsg.className = 'enroll-msg err';
+      cardTestMsg.textContent = result.error || 'დაკავშირება ვერ მოხერხდა';
+    }
+    loadCardDeviceInfo();
+  } catch (err) {
+    cardTestMsg.className = 'enroll-msg err';
+    cardTestMsg.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 document.getElementById('clearHistoryBtn').addEventListener('click', async () => {
   if (!confirm('წავშალოთ დასწრების მთელი ისტორია? რეგისტრირებულ თანამშრომლებზე გავლენას არ იქონიებს.')) return;
   await fetch('/api/checkins', { method: 'DELETE' });
@@ -840,6 +1107,7 @@ document.addEventListener('keydown', (e) => {
 
 load();
 loadPending();
+loadPendingCards();
 loadDeviceInfo();
 loadCardDeviceInfo();
 loadSettings();
