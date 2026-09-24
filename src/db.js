@@ -365,7 +365,18 @@ function listCheckins({ date, employeeNo, limit = 200 } = {}) {
     -- direction, which would otherwise group every such row on the same
     -- day into one -- falling back to the row's own (unique) id keeps them
     -- ungrouped instead.
-    GROUP BY employee_no, substr(event_time, 1, 10), COALESCE(direction, id)
+    --
+    -- Card-reader rows (device_id='card') are deliberately grouped by their
+    -- own id instead -- i.e. never collapsed with anything else. A face
+    -- scan can passively re-trigger just from someone standing in the
+    -- camera's view, so collapsing repeats down to one "in" and one "out"
+    -- per day is the right call there; a card tap can't happen by accident
+    -- the same way (it needs an actual physical tap), so every single one
+    -- is a real, deliberate event that should show up on its own.
+    GROUP BY CASE
+      WHEN device_id = 'card' THEN 'card:' || id
+      ELSE employee_no || ':' || substr(event_time, 1, 10) || ':' || COALESCE(direction, id)
+    END
     ORDER BY event_time DESC LIMIT ?
   `;
   params.push(getCheckoutAfter(), limit);
@@ -445,18 +456,35 @@ function deletePendingCard(id) {
 // Deliberately simple — no hours/overtime math, because the terminal has no
 // concept of a shift, only scans. A day with one scan or ten still counts
 // as one day worked, same as check-in/out direction already treats it.
+// attended_dates: a sorted, comma-separated list of the actual calendar
+// days counted in days_present -- a plain count is enough for the on-screen
+// payroll table, but a proper exported report should let whoever's paying
+// someone actually see and audit which days, not just trust a number. A
+// correlated subquery (rather than pulling it from the same LEFT JOIN as
+// days_present/total_pay) is what lets it come out pre-sorted -- SQLite's
+// GROUP_CONCAT(DISTINCT ...) does not support ORDER BY and returns dates in
+// an unspecified order otherwise.
 function payroll({ start, end }) {
   return db.prepare(`
     SELECT e.employee_no, e.name, e.daily_wage,
       COUNT(DISTINCT substr(c.event_time, 1, 10)) AS days_present,
-      COUNT(DISTINCT substr(c.event_time, 1, 10)) * COALESCE(e.daily_wage, 0) AS total_pay
+      COUNT(DISTINCT substr(c.event_time, 1, 10)) * COALESCE(e.daily_wage, 0) AS total_pay,
+      (
+        SELECT GROUP_CONCAT(d, ', ') FROM (
+          SELECT DISTINCT substr(c2.event_time, 1, 10) AS d
+          FROM checkins c2
+          WHERE c2.employee_no = e.employee_no
+            AND substr(c2.event_time, 1, 10) BETWEEN ? AND ?
+          ORDER BY d
+        )
+      ) AS attended_dates
     FROM employees e
     LEFT JOIN checkins c
       ON c.employee_no = e.employee_no
      AND substr(c.event_time, 1, 10) BETWEEN ? AND ?
     GROUP BY e.employee_no
     ORDER BY e.name COLLATE NOCASE ASC
-  `).all(start, end);
+  `).all(start, end, start, end);
 }
 
 module.exports = {

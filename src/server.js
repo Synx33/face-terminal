@@ -15,6 +15,7 @@ const {
   setCardDeviceIpPersisted, setCardDeviceCredentialsPersisted,
 } = require('./settings');
 const { enrollEmployee } = require('./enroll');
+const { buildCheckinsReport, buildPayrollReport } = require('./reports');
 const { runBackup, BACKUP_DIR, BACKUP_INTERVAL_MS } = require('./backup');
 const authState = require('./deviceAuthState');
 const logger = require('./logger');
@@ -660,33 +661,43 @@ app.get('/api/payroll', (req, res) => {
   res.json(db.payroll({ start, end }));
 });
 
-// --- CSV export ------------------------------------------------------------------
-function csvField(value) {
-  const s = value === null || value === undefined ? '' : String(value);
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
-function csvRow(fields) {
-  return fields.map(csvField).join(',');
-}
+// --- report export (styled .xlsx, not raw CSV) ------------------------------
+// A plain CSV can't be "pretty" -- it's just delimited text, no styling
+// possible at all. Reports meant to actually be handed to someone (an
+// owner, an accountant) go out as real formatted Excel workbooks instead:
+// a title block, a colored header row, currency/date formatting, zebra
+// striping, and (for payroll) a grand-total row. See src/reports.js.
+const XLSX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
-app.get('/api/checkins/export', (req, res) => {
+app.get('/api/checkins/export', async (req, res) => {
   const { date, employeeNo } = req.query;
   const rows = db.listCheckins({ date, employeeNo, limit: 1_000_000 });
-  const lines = ['employee_no,name,event_time,direction,verify_mode'];
-  for (const r of rows) lines.push(csvRow([r.employee_no, r.name, r.event_time, r.direction, r.verify_mode]));
-  const filename = `checkins${date ? `-${date}` : ''}.csv`;
-  res.type('text/csv').attachment(filename).send(lines.join('\n'));
+  const siteName = db.getSetting('site_name', 'დასწრების ჟურნალი');
+  const filterParts = [];
+  filterParts.push(date ? `თარიღი: ${date}` : 'ყველა თარიღი');
+  if (employeeNo) {
+    const empName = db.employeeName(employeeNo);
+    filterParts.push(`თანამშრომელი: ${empName || `#${employeeNo}`}`);
+  }
+  const wb = await buildCheckinsReport(rows, { siteName, filterLabel: filterParts.join(' · ') });
+  const filename = `attendance-report${date ? `-${date}` : ''}.xlsx`;
+  res.type(XLSX_CONTENT_TYPE).attachment(filename);
+  await wb.xlsx.write(res);
+  res.end();
 });
 
-app.get('/api/payroll/export', (req, res) => {
+app.get('/api/payroll/export', async (req, res) => {
   const { start, end } = req.query;
   if (!start || !end) {
     return res.status(400).json({ error: 'start and end query params are required' });
   }
   const rows = db.payroll({ start, end });
-  const lines = ['employee_no,name,days_present,daily_wage,total_pay'];
-  for (const r of rows) lines.push(csvRow([r.employee_no, r.name, r.days_present, r.daily_wage, r.total_pay]));
-  res.type('text/csv').attachment(`payroll-${start}_to_${end}.csv`).send(lines.join('\n'));
+  const siteName = db.getSetting('site_name', 'დასწრების ჟურნალი');
+  const currency = db.getSetting('currency', '₾');
+  const wb = await buildPayrollReport(rows, { siteName, currency, start, end });
+  res.type(XLSX_CONTENT_TYPE).attachment(`payroll-report-${start}_to_${end}.xlsx`);
+  await wb.xlsx.write(res);
+  res.end();
 });
 
 app.use('/snapshots', express.static(SNAPSHOT_DIR));
@@ -753,7 +764,15 @@ function onNewCheckin(insertedId) {
   // event_time), not the period's representative row — using the
   // representative here would always compare a row against itself and
   // never detect a repeat.
-  const isRepeat = inserted.employee_no && db.isSameSession(inserted.employee_no, inserted.event_time, inserted.id);
+  //
+  // Never applied to card-reader rows -- a face scan can passively
+  // re-trigger just from someone standing in view of the camera, which is
+  // the whole reason this same-session collapsing exists; a card tap can't
+  // happen by accident the same way, so every tap is a deliberate action
+  // that should always be read, saved, and shown, with no time-of-day
+  // gating at all.
+  const isRepeat = inserted.device_id !== 'card'
+    && inserted.employee_no && db.isSameSession(inserted.employee_no, inserted.event_time, inserted.id);
   if (isRepeat) {
     const direction = db.periodOf(inserted.event_time, db.getCheckoutAfter());
     logger.log(`[checkin] ${inserted.name || inserted.employee_no} scanned again while already checked ${direction} today — ignored until the period changes`);
