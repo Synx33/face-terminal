@@ -19,6 +19,14 @@
       <div class="top-right">
         <span class="subtitle" id="deviceSubtitle">DS-K1T343EWX</span>
         <span class="subtitle" id="cardDeviceSubtitle" hidden></span>
+        <span class="subtitle" id="currentUserLabel"></span>
+        <button id="logoutBtn" class="icon-btn" title="გასვლა" aria-label="გასვლა">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+            <path d="M16 17l5-5-5-5"></path>
+            <path d="M21 12H9"></path>
+          </svg>
+        </button>
         <button id="settingsBtn" class="icon-btn" title="პარამეტრები" aria-label="პარამეტრები">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="3"></circle>
@@ -42,7 +50,7 @@
           <select id="employeeFilter">
             <option value="">ყველა თანამშრომელი</option>
           </select>
-          <button id="exportCsvBtn" title="ჩამოტვირთეთ ეს ხედი Excel ანგარიშად">ანგარიშის ჩამოტვირთვა</button>
+          <button id="exportCsvBtn" title="ჩამოტვირთეთ ეს ხედი Excel ანგარიშად">რეპორტის ამოღება</button>
           <span id="status"></span>
         </div>
 
@@ -51,7 +59,7 @@
       </section>
 
       <section class="tab-panel" data-panel="workers" hidden>
-        <div class="subsection">
+        <div class="subsection" id="faceCaptureSection">
           <h2>ახალი სახის დამატება</h2>
           <p class="panel-hint">ახალი თანამშრომელი დააყენეთ ტერმინალის წინ და დააჭირეთ ღილაკს — ჯერ ეს ყველასთვის გააკეთეთ, შემდეგ დაუბრუნდით და მიუთითეთ სახელი და, სურვილისამებრ, დღიური ანაზღაურება.</p>
           <button id="captureBtn" class="primary">ახალი სახის გადაღება</button>
@@ -82,7 +90,7 @@
           <label for="payrollEnd">მდე</label>
           <input type="date" id="payrollEnd" />
           <button id="calcPayrollBtn" class="primary">გამოთვლა</button>
-          <button id="exportPayrollBtn" title="ჩამოტვირთეთ Excel ანგარიშად">ანგარიშის ჩამოტვირთვა</button>
+          <button id="exportPayrollBtn" title="ჩამოტვირთეთ Excel ანგარიშად">რეპორტის ამოღება</button>
         </div>
         <div class="enroll-msg" id="payrollMsg"></div>
         <table class="payroll-table" id="payrollTable" hidden>
@@ -103,6 +111,21 @@
 
     <div class="modal-body">
       <div class="subsection">
+        <h3>ჩემი ანგარიში</h3>
+        <p class="hint-text" id="myAccountLabel"></p>
+        <div class="field-row">
+          <label for="currentPassInput">მიმდინარე პაროლი</label>
+          <input type="password" id="currentPassInput" autocomplete="current-password" />
+        </div>
+        <div class="field-row">
+          <label for="newPassInput">ახალი პაროლი</label>
+          <input type="password" id="newPassInput" placeholder="მინიმუმ 8 სიმბოლო" autocomplete="new-password" />
+        </div>
+        <button id="changeMyPassBtn">პაროლის შეცვლა</button>
+        <div class="enroll-msg" id="changeMyPassMsg"></div>
+      </div>
+
+      <div class="subsection" data-admin-only>
         <h3>ტერმინალი</h3>
         <div class="field-row">
           <label for="deviceIpInput">IP მისამართი</label>
@@ -132,7 +155,7 @@
         <div class="enroll-msg" id="credsMsg"></div>
       </div>
 
-      <div class="subsection">
+      <div class="subsection" data-admin-only>
         <h3>ბარათის წამკითხველი (DS-K2802)</h3>
         <p class="hint-text">არასავალდებულო მეორე მოწყობილობა — ბარათის წამკითხველის კონტროლერი. მიუთითეთ მისი IP, მომხმარებელი და პაროლი, შემდეგ გადაამოწმეთ კავშირი ღილაკით.</p>
         <div class="field-row">
@@ -169,7 +192,7 @@
         <div class="enroll-msg" id="cardTestMsg"></div>
       </div>
 
-      <div class="subsection">
+      <div class="subsection" data-admin-only>
         <h3>ზოგადი</h3>
         <div class="field-row">
           <label for="siteNameInput">დასახელება</label>
@@ -192,7 +215,7 @@
         <div class="enroll-msg" id="appSettingsMsg"></div>
       </div>
 
-      <div class="subsection">
+      <div class="subsection" data-admin-only>
         <h3>მონაცემები და სარეზერვო ასლები</h3>
         <div class="field-row">
           <button id="clearHistoryBtn" class="danger">ისტორიის გასუფთავება</button>
@@ -205,6 +228,32 @@
         <div class="enroll-msg" id="settingsMsg"></div>
         <pre id="logView" hidden></pre>
         <div id="backupList" class="hint-text"></div>
+      </div>
+
+      <div class="subsection" data-admin-only>
+        <h3>მომხმარებლები</h3>
+        <p class="hint-text">დაფის ანგარიშები და უფლებები — ნახვა, რედაქტირება, დამატება, წაშლა. ეს გვერდი მხოლოდ ადმინისტრატორებისთვისაა.</p>
+        <div class="user-grid" id="userGrid"></div>
+        <div class="subsection" style="margin-top:1.25rem; border-top:1px dashed var(--rule); padding-top:1.25rem;">
+          <h3 style="margin-top:0;">ახალი მომხმარებლის დამატება</h3>
+          <div class="field-row">
+            <label for="newUserName">მომხმარებელი</label>
+            <input type="text" id="newUserName" placeholder="მაგ. giorgi" />
+          </div>
+          <div class="field-row">
+            <label for="newUserPass">პაროლი</label>
+            <input type="password" id="newUserPass" placeholder="მინიმუმ 8 სიმბოლო" autocomplete="new-password" />
+          </div>
+          <div class="perm-toggles" id="newUserPerms">
+            <label><input type="checkbox" data-perm="canView" checked /> ნახვა</label>
+            <label><input type="checkbox" data-perm="canEdit" /> რედაქტირება</label>
+            <label><input type="checkbox" data-perm="canAdd" /> დამატება</label>
+            <label><input type="checkbox" data-perm="canRemove" /> წაშლა</label>
+            <label><input type="checkbox" data-perm="isAdmin" /> ადმინისტრატორი</label>
+          </div>
+          <button id="createUserBtn" class="primary">მომხმარებლის შექმნა</button>
+          <div class="enroll-msg" id="userMsg"></div>
+        </div>
       </div>
     </div>
   </dialog>

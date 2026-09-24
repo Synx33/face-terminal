@@ -23,12 +23,15 @@ This is the deploy target — the site runs this from a Windows laptop.
 2. Find that site's terminal's MAC address (a sticker on the unit itself,
    or its own local menu under Network settings) — every site has a
    different one, so there's no default to fall back on here.
-3. Open a normal (non-administrator) PowerShell in the project folder and run:
+3. Decide the dashboard's own first login (this is separate from the
+   terminal's own admin login — it's the account you'll actually use to
+   open the dashboard in a browser afterward).
+4. Open a normal (non-administrator) PowerShell in the project folder and run:
    ```powershell
    Set-ExecutionPolicy -Scope Process Bypass
-   .\windows\install.ps1 -DeviceMac "AA:BB:CC:DD:EE:FF" -DevicePass "<the terminal's admin password>"
+   .\windows\install.ps1 -DeviceMac "AA:BB:CC:DD:EE:FF" -DevicePass "<the terminal's admin password>" -AdminPass "<a password for the dashboard's first login>"
    ```
-   (leave off either `-DeviceMac` or `-DevicePass` and it'll prompt for them interactively instead)
+   (leave off `-DeviceMac`, `-DevicePass`, or `-AdminPass` and it'll prompt for them interactively instead; `-AdminUser` defaults to `admin` if not given)
 
 Installing a Windows service and opening a firewall port both need admin
 rights — the installer detects it isn't elevated and relaunches itself,
@@ -45,7 +48,7 @@ dashboard URL to open in a browser.
 
 Customize with parameters if needed:
 ```powershell
-.\windows\install.ps1 -DeviceMac "AA:BB:CC:DD:EE:FF" -DevicePass "..." -Port 8080 -DeviceIp 10.0.0.50
+.\windows\install.ps1 -DeviceMac "AA:BB:CC:DD:EE:FF" -DevicePass "..." -AdminPass "..." -AdminUser "manager" -Port 8080 -DeviceIp 10.0.0.50
 ```
 
 Service management:
@@ -103,6 +106,7 @@ Or as a systemd service — see `face-terminal.service` for the unit file
 | `CARD_DEVICE_IP` | Optional second device — a DS-K2802 card-reader controller. Leave blank to run with just the face terminal (the default). No auto-discovery for this one (see below) — must be set explicitly. All three of these (plus credentials) can also be entered straight from the dashboard's Settings dialog, with a live "test connection" button — editing `.env` by hand is not required. |
 | `CARD_DEVICE_USER` / `CARD_DEVICE_PASS` | Card controller's admin login. Defaults to `DEVICE_USER`/`DEVICE_PASS` if left blank. |
 | `CARD_SDK_LIB_DIR` / `LD_LIBRARY_PATH` | Linux only — where this box's own copy of Hikvision's Linux SDK build lives. See "Setup" under the card-reader section below. |
+| `ADMIN_USER` / `ADMIN_PASS` | The dashboard's own first login account, created automatically the first time it ever starts with no accounts yet. Leave blank and a random password gets generated and printed to the log once instead (see "Accounts and permissions" below). |
 
 ## What it does
 
@@ -220,23 +224,48 @@ unrelated historical backlog of operation-log noise instead of real-time
 events. Polling its `AcsEvent` search API directly is slower in theory
 (bounded by the poll interval) but proved far more reliable in practice.
 
+## Accounts and permissions
+
+Every route requires logging in — the dashboard opens straight to
+`/login.html` for anyone without a valid session. The very first account
+(username/password set via `-AdminPass`/`-AdminUser` at install time, or
+`ADMIN_USER`/`ADMIN_PASS` in `.env`) is an admin, created automatically the
+first time the app ever starts with no accounts yet; leave those unset and a
+random password gets generated and printed to the log once instead — check
+`data\logs\face-terminal.log`, it's never shown again after that.
+
+Admins manage every other account from Settings → Users: create a login,
+toggle four independent permissions per person, or delete an account.
+Nothing here is a role name or preset tier — it's exactly these four
+switches, each one either on or off:
+
+| Permission | Lets someone... |
+|---|---|
+| ნახვა (view) | See the check-in feed, payroll, worker list, and export reports |
+| რედაქტირება (edit) | Rename workers, change daily wages, assign/clear card numbers |
+| დამატება (add) | Capture new faces/cards and enroll new workers |
+| წაშლა (remove) | Delete a worker |
+
+Only an admin can manage other accounts, device/card-reader settings, app
+settings (site name/currency/poll timing), backups, or logs — those aren't
+covered by the four permissions above, they're admin-only outright. The
+last remaining admin account can't be demoted or deleted (there'd be no one
+left who could ever fix that). Anyone can change their own password from
+Settings → My Account, regardless of what else they can do.
+
 ## Security notes
 
 Built for a trusted LAN, not the public internet — same model as
 [face-logger](https://github.com/Synx33/face-logger):
 
-- **No login on any endpoint.** Anyone who can reach the dashboard's port
-  can view attendance history and photos, enroll/rename/remove a worker,
-  edit daily wages, view payroll, change the device IP or any other
-  setting, or clear check-in history/logs. There's no auth layer at all.
-  If that's ever not acceptable for how this is deployed, that needs adding
-  before relying on it — it is not currently a "safe by default" app.
 - **The Windows installer's firewall rule is scoped to Domain/Private
-  networks only, not Public**, specifically because of the point above —
-  see the installer's network-profile warning if the dashboard isn't
-  reachable from other machines on site.
-- The device's admin password lives in plain text in `.env` on this
-  machine. Treat that file (and this machine generally) as holding a real
-  credential.
+  networks only, not Public** — see the installer's network-profile warning
+  if the dashboard isn't reachable from other machines on site.
+- Sessions are plain random tokens in a cookie (not JWTs — see auth.js for
+  why), stored server-side so they can be revoked immediately (a password
+  change signs out every other session for that account). 30-day expiry.
+- The device's admin password, and every dashboard account's password hash,
+  live in `.env`/the local database on this machine. Treat that file (and
+  this machine generally) as holding real credentials.
 - Snapshots contain faces — they're served as static files under
   `/snapshots/*` with no access control either.

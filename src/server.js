@@ -18,6 +18,7 @@ const { enrollEmployee } = require('./enroll');
 const { buildCheckinsReport, buildPayrollReport } = require('./reports');
 const { runBackup, BACKUP_DIR, BACKUP_INTERVAL_MS } = require('./backup');
 const authState = require('./deviceAuthState');
+const auth = require('./auth');
 const logger = require('./logger');
 
 // --- second device: DS-K2802 card-reader controller (optional) -------------
@@ -62,6 +63,160 @@ app.use(express.json({ limit: '8mb' })); // generous enough for a base64-encoded
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/live' });
 
+// --- auth: everything below this block requires a login session ------------
+// index:false stops express.static from auto-serving public/index.html for
+// GET / -- that path gets its own handler right below instead, so it can
+// redirect to the login page when there's no valid session, rather than
+// silently handing an unauthenticated visitor the full dashboard shell
+// (whose API calls would all just 401 -- confusing, not actually secure).
+app.use(express.static(path.join(__dirname, '..', 'public'), { index: false }));
+
+// Runs synchronously at module load, before server.listen() ever starts
+// accepting connections -- there must never be a window where the server
+// is reachable but no account exists to log into it yet.
+auth.bootstrapAdmin();
+
+function currentSession(req) {
+  const token = auth.readSessionToken(req);
+  const session = token && db.getSessionWithUser(token);
+  if (!session || new Date(session.expires_at) < new Date()) return null;
+  return session;
+}
+
+app.get('/', (req, res) => {
+  if (!currentSession(req)) return res.redirect('/login.html');
+  res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
+});
+
+app.post('/api/auth/login', (req, res) => {
+  const { username, password } = req.body || {};
+  if (!username || !password) return res.status(400).json({ error: 'მომხმარებელი და პაროლი სავალდებულოა' });
+  const user = db.getUserByUsername(username.trim());
+  if (!user || !auth.verifyPassword(password, user.password_hash)) {
+    return res.status(401).json({ error: 'არასწორი მომხმარებელი ან პაროლი' });
+  }
+  const { token } = auth.createSessionForUser(user.id);
+  auth.setSessionCookie(res, token);
+  logger.log(`[auth] ${user.username} logged in`);
+  res.json({ ok: true });
+});
+
+// Public on purpose -- logging out only ever needs whatever cookie the
+// browser already has (or doesn't), never a proof of who's asking. Missing
+// or already-expired session: still a no-op success, since the end state
+// ("no valid session, cookie cleared") is identical either way.
+app.post('/api/auth/logout', (req, res) => {
+  const token = auth.readSessionToken(req);
+  if (token) db.deleteSession(token);
+  auth.clearSessionCookie(res);
+  res.json({ ok: true });
+});
+
+app.use(auth.requireAuth); // every route registered from here down needs a valid session
+
+app.get('/api/auth/me', (req, res) => {
+  res.json({
+    id: req.user.id,
+    username: req.user.username,
+    isAdmin: Boolean(req.user.is_admin),
+    canView: Boolean(req.user.can_view),
+    canEdit: Boolean(req.user.can_edit),
+    canAdd: Boolean(req.user.can_add),
+    canRemove: Boolean(req.user.can_remove),
+  });
+});
+
+app.post('/api/auth/change-password', (req, res) => {
+  const { currentPassword, newPassword } = req.body || {};
+  if (!newPassword || newPassword.length < 8) {
+    return res.status(400).json({ error: 'ახალი პაროლი უნდა შედგებოდეს მინიმუმ 8 სიმბოლოსგან' });
+  }
+  if (!auth.verifyPassword(currentPassword || '', req.user.password_hash)) {
+    return res.status(401).json({ error: 'მიმდინარე პაროლი არასწორია' });
+  }
+  db.updateUserPassword(req.user.id, auth.hashPassword(newPassword));
+  // Every OTHER session for this account gets signed out -- a password
+  // change is exactly the moment an old/compromised session should stop
+  // working, and the one making the change already has a fresh cookie so
+  // it never notices. The current token is re-issued fresh (rather than
+  // just spared) so it isn't silently orphaned by the same invalidation.
+  db.deleteSessionsForUser(req.user.id);
+  const { token } = auth.createSessionForUser(req.user.id);
+  auth.setSessionCookie(res, token);
+  logger.log(`[auth] ${req.user.username} changed their own password`);
+  res.json({ ok: true });
+});
+
+// --- user account management (admin only) -----------------------------------
+app.get('/api/users', auth.requireAdmin, (req, res) => {
+  res.json(db.listUsers());
+});
+
+app.post('/api/users', auth.requireAdmin, (req, res) => {
+  const { username, password, isAdmin, canView, canEdit, canAdd, canRemove } = req.body || {};
+  if (!username || typeof username !== 'string' || !username.trim()) {
+    return res.status(400).json({ error: 'მომხმარებლის სახელი სავალდებულოა' });
+  }
+  if (!password || password.length < 8) {
+    return res.status(400).json({ error: 'პაროლი უნდა შედგებოდეს მინიმუმ 8 სიმბოლოსგან' });
+  }
+  if (db.getUserByUsername(username.trim())) {
+    return res.status(409).json({ error: 'ეს მომხმარებლის სახელი უკვე დაკავებულია' });
+  }
+  const id = db.createUser({
+    username: username.trim(),
+    passwordHash: auth.hashPassword(password),
+    isAdmin: Boolean(isAdmin), canView: Boolean(canView), canEdit: Boolean(canEdit), canAdd: Boolean(canAdd), canRemove: Boolean(canRemove),
+  });
+  logger.log(`[auth] ${req.user.username} created account "${username.trim()}"`);
+  res.json({ id });
+});
+
+app.put('/api/users/:id', auth.requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const target = db.getUserById(id);
+  if (!target) return res.status(404).json({ error: 'მომხმარებელი ვერ მოიძებნა' });
+  const { isAdmin, canView, canEdit, canAdd, canRemove, password } = req.body || {};
+  // The very last admin can't demote themselves (or be demoted) -- there
+  // would then be no account left able to fix that, or manage any other
+  // account, ever again, short of hand-editing the database.
+  if (target.is_admin && isAdmin === false) {
+    const adminCount = db.listUsers().filter((u) => u.is_admin).length;
+    if (adminCount <= 1) {
+      return res.status(400).json({ error: 'ბოლო ადმინისტრატორს არ შეიძლება წაერთვას უფლება — ჯერ დანიშნეთ სხვა ადმინისტრატორი' });
+    }
+  }
+  db.updateUserPermissions(id, {
+    isAdmin: isAdmin ?? Boolean(target.is_admin),
+    canView: canView ?? Boolean(target.can_view),
+    canEdit: canEdit ?? Boolean(target.can_edit),
+    canAdd: canAdd ?? Boolean(target.can_add),
+    canRemove: canRemove ?? Boolean(target.can_remove),
+  });
+  if (password) {
+    if (password.length < 8) return res.status(400).json({ error: 'პაროლი უნდა შედგებოდეს მინიმუმ 8 სიმბოლოსგან' });
+    db.updateUserPassword(id, auth.hashPassword(password));
+    db.deleteSessionsForUser(id); // force re-login with the new password, same reasoning as change-password above
+  }
+  logger.log(`[auth] ${req.user.username} updated account "${target.username}"`);
+  res.json({ ok: true });
+});
+
+app.delete('/api/users/:id', auth.requireAdmin, (req, res) => {
+  const id = Number(req.params.id);
+  const target = db.getUserById(id);
+  if (!target) return res.status(404).json({ error: 'მომხმარებელი ვერ მოიძებნა' });
+  if (target.is_admin && db.listUsers().filter((u) => u.is_admin).length <= 1) {
+    return res.status(400).json({ error: 'ბოლო ადმინისტრატორის წაშლა არ შეიძლება' });
+  }
+  if (id === req.user.id) {
+    return res.status(400).json({ error: 'საკუთარი ანგარიშის წაშლა შეუძლებელია — სთხოვეთ სხვა ადმინისტრატორს' });
+  }
+  db.deleteUser(id);
+  logger.log(`[auth] ${req.user.username} deleted account "${target.username}"`);
+  res.json({ ok: true });
+});
+
 function broadcast(msg) {
   const json = JSON.stringify(msg);
   for (const client of wss.clients) {
@@ -96,8 +251,13 @@ function rejectIfAuthBackedOff(res) {
   return true;
 }
 
+// Worker/checkin photos -- gated behind the same auth as everything else
+// now (this line moved here specifically so it lands after app.use(auth.requireAuth)
+// above), not left as an anyone-can-fetch-if-they-guess-the-path static mount.
+app.use('/snapshots', express.static(SNAPSHOT_DIR));
+
 // --- read API for the dashboard ---------------------------------------------
-app.get('/api/checkins', (req, res) => {
+app.get('/api/checkins', auth.requirePermission('can_view'), (req, res) => {
   const { date, employeeNo, limit } = req.query;
   // A non-numeric ?limit (or anything else that doesn't parse to a finite,
   // positive number) must fall back to listCheckins' own default rather
@@ -109,11 +269,11 @@ app.get('/api/checkins', (req, res) => {
   res.json(db.listCheckins({ date, employeeNo, limit: safeLimit }));
 });
 
-app.get('/api/device', (req, res) => {
+app.get('/api/device', auth.requirePermission('can_view'), (req, res) => {
   res.json({ model: 'DS-K1T343EWX', ip: hasDeviceIp() ? getDeviceIp() : null, auth: authState.status() });
 });
 
-app.get('/api/card-device', (req, res) => {
+app.get('/api/card-device', auth.requirePermission('can_view'), (req, res) => {
   res.json({
     model: 'DS-K2802',
     enabled: cardDeviceConfigured(),
@@ -144,7 +304,7 @@ app.get('/api/card-device', (req, res) => {
 // test what's actually saved, so there's exactly one place a login attempt
 // can be triggered from, not two.
 let cardTestInFlight = false;
-app.post('/api/card-device/test', async (req, res) => {
+app.post('/api/card-device/test', auth.requireAdmin, async (req, res) => {
   if (cardTestInFlight) return res.status(429).json({ error: 'ტესტი უკვე მიმდინარეობს' });
   if (!cardDeviceConfigured()) {
     return res.status(400).json({ error: 'ჯერ მიუთითეთ ბარათის მოწყობილობის IP პარამეტრებში' });
@@ -174,14 +334,14 @@ app.post('/api/card-device/test', async (req, res) => {
   }
 });
 
-app.get('/api/stats', (req, res) => {
+app.get('/api/stats', auth.requirePermission('can_view'), (req, res) => {
   res.json(db.stats());
 });
 
 // --- settings ------------------------------------------------------------------
 // Everything here is meant to be changeable by whoever runs the site, from
 // the dashboard itself — no config file, no restart, no SSH/RDP needed.
-app.get('/api/settings', (req, res) => {
+app.get('/api/settings', auth.requirePermission('can_view'), (req, res) => {
   res.json({
     deviceIp: hasDeviceIp() ? getDeviceIp() : null,
     deviceMac: process.env.DEVICE_MAC || null,
@@ -199,7 +359,7 @@ app.get('/api/settings', (req, res) => {
   });
 });
 
-app.post('/api/settings/device-ip', (req, res) => {
+app.post('/api/settings/device-ip', auth.requireAdmin, (req, res) => {
   const { ip } = req.body || {};
   if (!ip || typeof ip !== 'string' || !/^\d{1,3}(\.\d{1,3}){3}$/.test(ip.trim())) {
     return res.status(400).json({ error: 'enter a valid IPv4 address, e.g. 10.10.11.184' });
@@ -216,7 +376,7 @@ app.post('/api/settings/device-ip', (req, res) => {
 // cardDeviceConfigured() re-reads process.env on every call instead of
 // freezing the answer at startup, specifically so "type the IP in and see
 // it connect" works on the very first try.
-app.post('/api/settings/card-device-ip', (req, res) => {
+app.post('/api/settings/card-device-ip', auth.requireAdmin, (req, res) => {
   const { ip } = req.body || {};
   if (!ip || typeof ip !== 'string' || !/^\d{1,3}(\.\d{1,3}){3}$/.test(ip.trim())) {
     return res.status(400).json({ error: 'enter a valid IPv4 address, e.g. 10.10.11.185' });
@@ -228,7 +388,7 @@ app.post('/api/settings/card-device-ip', (req, res) => {
   res.json({ ok: true, cardDeviceIp: ip.trim() });
 });
 
-app.post('/api/settings/device-credentials', (req, res) => {
+app.post('/api/settings/device-credentials', auth.requireAdmin, (req, res) => {
   const { user, pass } = req.body || {};
   if (user !== undefined && (typeof user !== 'string' || !user.trim())) {
     return res.status(400).json({ error: 'username cannot be empty' });
@@ -247,7 +407,7 @@ app.post('/api/settings/device-credentials', (req, res) => {
   res.json({ ok: true, deviceUser: process.env.DEVICE_USER || null });
 });
 
-app.post('/api/settings/card-device-credentials', (req, res) => {
+app.post('/api/settings/card-device-credentials', auth.requireAdmin, (req, res) => {
   const { user, pass } = req.body || {};
   if (user !== undefined && (typeof user !== 'string' || !user.trim())) {
     return res.status(400).json({ error: 'username cannot be empty' });
@@ -264,7 +424,7 @@ app.post('/api/settings/card-device-credentials', (req, res) => {
   res.json({ ok: true, cardDeviceUser: process.env.CARD_DEVICE_USER || process.env.DEVICE_USER || null });
 });
 
-app.post('/api/settings/app', (req, res) => {
+app.post('/api/settings/app', auth.requireAdmin, (req, res) => {
   const { siteName, currency, pollIntervalMs, checkoutAfter } = req.body || {};
 
   if (siteName !== undefined) {
@@ -303,7 +463,7 @@ app.post('/api/settings/app', (req, res) => {
   });
 });
 
-app.get('/api/backups', (req, res) => {
+app.get('/api/backups', auth.requireAdmin, (req, res) => {
   let files = [];
   try {
     files = fs.readdirSync(BACKUP_DIR)
@@ -317,22 +477,22 @@ app.get('/api/backups', (req, res) => {
   res.json(files);
 });
 
-app.post('/api/backups', async (req, res) => {
+app.post('/api/backups', auth.requireAdmin, async (req, res) => {
   await runBackup();
   res.json({ ok: true });
 });
 
-app.get('/api/logs', (req, res) => {
+app.get('/api/logs', auth.requireAdmin, (req, res) => {
   res.type('text/plain').send(logger.readLog());
 });
 
-app.delete('/api/logs', (req, res) => {
+app.delete('/api/logs', auth.requireAdmin, (req, res) => {
   logger.clearLog();
   logger.log('[settings] log cleared');
   res.json({ ok: true });
 });
 
-app.delete('/api/checkins', (req, res) => {
+app.delete('/api/checkins', auth.requireAdmin, (req, res) => {
   db.clearCheckins();
   logger.log('[settings] check-in history cleared');
   res.json({ ok: true });
@@ -342,7 +502,7 @@ app.delete('/api/checkins', (req, res) => {
 // Two ways in: a direct name+photo (kept for API/scripted use), and the
 // primary UI flow — capture a face now (no name needed yet), then claim it
 // with a name later once whoever's in charge is free to go through them.
-app.post('/api/employees', async (req, res) => {
+app.post('/api/employees', auth.requirePermission('can_add'), async (req, res) => {
   const { name, photoBase64, dailyWage } = req.body || {};
   if (!name || typeof name !== 'string' || !name.trim()) {
     return res.status(400).json({ error: 'name is required' });
@@ -366,7 +526,7 @@ app.post('/api/employees', async (req, res) => {
   }
 });
 
-app.post('/api/pending-workers', async (req, res) => {
+app.post('/api/pending-workers', auth.requirePermission('can_add'), async (req, res) => {
   if (rejectIfAuthBackedOff(res)) return;
   try {
     const jpeg = await deviceClient.fetchSnapshot();
@@ -379,11 +539,11 @@ app.post('/api/pending-workers', async (req, res) => {
   }
 });
 
-app.get('/api/pending-workers', (req, res) => {
+app.get('/api/pending-workers', auth.requirePermission('can_view'), (req, res) => {
   res.json(db.listPendingWorkers());
 });
 
-app.post('/api/pending-workers/:id/claim', async (req, res) => {
+app.post('/api/pending-workers/:id/claim', auth.requirePermission('can_add'), async (req, res) => {
   const id = Number(req.params.id);
   const { name, dailyWage } = req.body || {};
   if (!name || typeof name !== 'string' || !name.trim()) {
@@ -414,7 +574,7 @@ app.post('/api/pending-workers/:id/claim', async (req, res) => {
   }
 });
 
-app.delete('/api/pending-workers/:id', (req, res) => {
+app.delete('/api/pending-workers/:id', auth.requirePermission('can_add'), (req, res) => {
   const id = Number(req.params.id);
   const pending = db.getPendingWorker(id);
   if (!pending) return res.status(404).json({ error: 'no such pending capture' });
@@ -442,7 +602,7 @@ function clearPendingCardTimer(id) {
   }
 }
 
-app.post('/api/pending-cards', (req, res) => {
+app.post('/api/pending-cards', auth.requirePermission('can_add'), (req, res) => {
   if (!cardDeviceConfigured()) {
     return res.status(400).json({ error: 'ბარათის მოწყობილობა არ არის კონფიგურირებული — მიუთითეთ IP/მომხმარებელი/პაროლი პარამეტრებში' });
   }
@@ -462,17 +622,17 @@ app.post('/api/pending-cards', (req, res) => {
   res.json(pending);
 });
 
-app.get('/api/pending-cards', (req, res) => {
+app.get('/api/pending-cards', auth.requirePermission('can_view'), (req, res) => {
   res.json(db.listPendingCards());
 });
 
-app.get('/api/pending-cards/:id', (req, res) => {
+app.get('/api/pending-cards/:id', auth.requirePermission('can_view'), (req, res) => {
   const pending = db.getPendingCard(Number(req.params.id));
   if (!pending) return res.status(404).json({ error: 'no such pending capture' });
   res.json(pending);
 });
 
-app.post('/api/pending-cards/:id/claim', async (req, res) => {
+app.post('/api/pending-cards/:id/claim', auth.requirePermission('can_add'), async (req, res) => {
   const id = Number(req.params.id);
   const { name, dailyWage } = req.body || {};
   if (!name || typeof name !== 'string' || !name.trim()) {
@@ -513,7 +673,7 @@ app.post('/api/pending-cards/:id/claim', async (req, res) => {
   res.json({ employeeNo, name: name.trim(), cardNo: pending.card_no });
 });
 
-app.delete('/api/pending-cards/:id', (req, res) => {
+app.delete('/api/pending-cards/:id', auth.requirePermission('can_add'), (req, res) => {
   const id = Number(req.params.id);
   const pending = db.getPendingCard(id);
   if (!pending) return res.status(404).json({ error: 'no such pending capture' });
@@ -523,11 +683,11 @@ app.delete('/api/pending-cards/:id', (req, res) => {
 });
 
 // --- worker management (list / rename / wage / remove) ------------------------
-app.get('/api/employees', (req, res) => {
+app.get('/api/employees', auth.requirePermission('can_view'), (req, res) => {
   res.json(db.listEmployees());
 });
 
-app.put('/api/employees/:employeeNo', async (req, res) => {
+app.put('/api/employees/:employeeNo', auth.requirePermission('can_edit'), async (req, res) => {
   const { employeeNo } = req.params;
   const { name, dailyWage } = req.body || {};
   if (name !== undefined && (typeof name !== 'string' || !name.trim())) {
@@ -570,7 +730,7 @@ app.put('/api/employees/:employeeNo', async (req, res) => {
   }
 });
 
-app.delete('/api/employees/:employeeNo', async (req, res) => {
+app.delete('/api/employees/:employeeNo', auth.requirePermission('can_remove'), async (req, res) => {
   const { employeeNo } = req.params;
   // A card-only employee (db.isCardOnlyEmployeeNo) has no device-side user
   // or face to remove at all -- deleting one is a pure local operation,
@@ -597,7 +757,7 @@ app.delete('/api/employees/:employeeNo', async (req, res) => {
 });
 
 // Assigns a physical card number (DS-K2802) to an existing local employee.
-app.post('/api/employees/:employeeNo/card', async (req, res) => {
+app.post('/api/employees/:employeeNo/card', auth.requirePermission('can_edit'), async (req, res) => {
   const { employeeNo } = req.params;
   const { cardNo } = req.body || {};
   if (cardNo !== undefined && typeof cardNo !== 'string') {
@@ -653,7 +813,7 @@ app.post('/api/employees/:employeeNo/card', async (req, res) => {
 });
 
 // --- payroll -------------------------------------------------------------------
-app.get('/api/payroll', (req, res) => {
+app.get('/api/payroll', auth.requirePermission('can_view'), (req, res) => {
   const { start, end } = req.query;
   if (!start || !end) {
     return res.status(400).json({ error: 'start and end query params are required, e.g. ?start=2026-07-01&end=2026-07-31' });
@@ -669,7 +829,7 @@ app.get('/api/payroll', (req, res) => {
 // striping, and (for payroll) a grand-total row. See src/reports.js.
 const XLSX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
-app.get('/api/checkins/export', async (req, res) => {
+app.get('/api/checkins/export', auth.requirePermission('can_view'), async (req, res) => {
   const { date, employeeNo } = req.query;
   const rows = db.listCheckins({ date, employeeNo, limit: 1_000_000 });
   const siteName = db.getSetting('site_name', 'დასწრების ჟურნალი');
@@ -686,7 +846,7 @@ app.get('/api/checkins/export', async (req, res) => {
   res.end();
 });
 
-app.get('/api/payroll/export', async (req, res) => {
+app.get('/api/payroll/export', auth.requirePermission('can_view'), async (req, res) => {
   const { start, end } = req.query;
   if (!start || !end) {
     return res.status(400).json({ error: 'start and end query params are required' });
@@ -699,9 +859,6 @@ app.get('/api/payroll/export', async (req, res) => {
   await wb.xlsx.write(res);
   res.end();
 });
-
-app.use('/snapshots', express.static(SNAPSHOT_DIR));
-app.use(express.static(path.join(__dirname, '..', 'public')));
 
 // --- startup -----------------------------------------------------------------
 async function syncEmployees() {
@@ -871,7 +1028,13 @@ function onCardEvent(event) {
     eventTime: event.eventTime, // already a formatted "+04:00" string (cardSdk.js's isoWithOffset), not a Date
     cardNo: event.cardNo,
     serialNo: Date.now(),
-    raw: JSON.stringify({ dwMajor: event.dwMajor, dwMinor: event.dwMinor }),
+    // cardNo kept here even though employeeNo already resolved it above --
+    // a card enrolled on the device itself (iVMS-4200, its own menu) but
+    // never assigned to anyone in this app resolves to no employee at all,
+    // and without this the actual card number would be gone for good the
+    // moment this row is written, leaving no way to ever identify which
+    // physical card an "(უცნობი)" row even was.
+    raw: JSON.stringify({ dwMajor: event.dwMajor, dwMinor: event.dwMinor, cardNo: event.cardNo }),
   }, 'push', 'card');
   if (insertedId) onNewCheckin(insertedId);
 }
@@ -945,6 +1108,12 @@ server.listen(PORT, async () => {
   // what's actually being backed up. Start this immediately instead.
   runBackup();
   setInterval(runBackup, BACKUP_INTERVAL_MS);
+
+  // Expired sessions are already refused by requireAuth (it checks
+  // expires_at on every request) -- this is just housekeeping so the table
+  // doesn't grow forever with rows nothing will ever read again.
+  db.pruneExpiredSessions();
+  setInterval(db.pruneExpiredSessions, 6 * 60 * 60 * 1000); // every 6h
 
   // Deliberately NOT awaited — an optional second device must never delay
   // or block startup of the (mandatory) face terminal path below.

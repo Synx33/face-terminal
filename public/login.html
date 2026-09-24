@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ka">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>შესვლა — დასწრების ჟურნალი</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="preload" href="/fonts/noto-sans-georgian-geo.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="stylesheet" href="/style.css" />
+<style>
+  /* Login-page-only layout -- everything else (colors, fonts, button/input
+     styling) comes straight from style.css, same look as the dashboard. */
+  body.login-body {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .login-card {
+    width: 100%;
+    max-width: 360px;
+    margin: 1.5rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 2rem 1.75rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,.06);
+  }
+  .login-card h1 {
+    font-size: 1.3rem;
+    margin: 0 0 .3rem;
+    text-align: center;
+  }
+  .login-card .sub {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: .85rem;
+    margin: 0 0 1.5rem;
+  }
+  .login-field { display: flex; flex-direction: column; gap: .35rem; margin-bottom: 1rem; }
+  .login-field label { font-size: .82rem; color: var(--text-muted); }
+  .login-field input {
+    font: inherit; padding: .55rem .7rem; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text);
+  }
+  .login-submit { width: 100%; margin-top: .4rem; }
+  .login-msg { min-height: 1.2em; text-align: center; font-size: .85rem; margin-top: .8rem; }
+</style>
+</head>
+<body class="login-body">
+  <div class="login-card">
+    <h1 id="siteTitle">დასწრების ჟურნალი</h1>
+    <p class="sub">შედით სისტემაში გასაგრძელებლად</p>
+    <form id="loginForm">
+      <div class="login-field">
+        <label for="username">მომხმარებელი</label>
+        <input type="text" id="username" autocomplete="username" required autofocus />
+      </div>
+      <div class="login-field">
+        <label for="password">პაროლი</label>
+        <input type="password" id="password" autocomplete="current-password" required />
+      </div>
+      <button type="submit" class="primary login-submit">შესვლა</button>
+      <div class="login-msg" id="loginMsg"></div>
+    </form>
+  </div>
+  <script>
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const username = document.getElementById('username').value.trim();
+      const password = document.getElementById('password').value;
+      const msg = document.getElementById('loginMsg');
+      const btn = document.querySelector('.login-submit');
+      msg.className = 'login-msg';
+      msg.textContent = '';
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password }),
+        });
+        const result = await res.json();
+        if (!res.ok) throw new Error(result.error || 'ვერ შესრულდა');
+        // Full navigation (not fetch-driven SPA swap) -- lets the browser
+        // apply the just-set session cookie to the very next request
+        // cleanly, and gives the dashboard's own fresh page load.
+        window.location.href = '/';
+      } catch (err) {
+        msg.className = 'login-msg err';
+        msg.textContent = err.message;
+        btn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

@@ -45,7 +45,18 @@ param(
     [Parameter(Mandatory = $true)]
     [string] $DevicePass,
     [int]    $PollIntervalMs = 1500,
-    [string] $CheckoutAfter = "19:00"
+    [string] $CheckoutAfter = "19:00",
+    # The dashboard's own first login account (separate from the terminal's
+    # admin login above) -- mandatory for the same reason DevicePass is: no
+    # account to leave a real login credential defaulted or committed to
+    # git history. Without this, the app would still boot fine and create
+    # an admin account on its own with a random generated password (see
+    # src/auth.js's bootstrapAdmin), but that password only ever gets
+    # printed to the service's log file -- passing it here directly is far
+    # less friction for whoever's doing this install.
+    [Parameter(Mandatory = $true)]
+    [string] $AdminPass,
+    [string] $AdminUser = "admin"
 )
 
 $ErrorActionPreference = "Stop"
@@ -246,6 +257,9 @@ POLL_INTERVAL_MS=$PollIntervalMs
 CHECKOUT_AFTER=$CheckoutAfter
 
 RECEIVER_IP=$ListenHost
+
+ADMIN_USER=$AdminUser
+ADMIN_PASS=$AdminPass
 "@ | Set-Content -Path $envPath -Encoding UTF8
 }
 
@@ -353,6 +367,7 @@ function Print-Summary {
     Write-Host "  service:       Get-Service $ServiceName"
     Write-Host "  dashboard:     http://${lanIp}:$Port/"
     Write-Host "  log:           $DataPath\logs\face-terminal.log"
+    Write-Host "  dashboard login: $AdminUser (the password you passed as -AdminPass)"
     Write-Host ""
     if ([string]::IsNullOrWhiteSpace($DeviceIp)) {
         Write-Host "Device IP wasn't pinned -- it's auto-discovering the terminal on this"

@@ -64,6 +64,38 @@ db.exec(`
     card_no    TEXT,
     created_at TEXT NOT NULL
   );
+
+  -- Dashboard login accounts. Permissions are plain boolean flags rather
+  -- than a role-name lookup table -- there are exactly four capabilities
+  -- this app has (view / edit / add / remove) and they don't compose into
+  -- anything more complex than "which of these four can this person do",
+  -- so a lookup table would just be indirection with nothing behind it.
+  -- is_admin is separate from (not implied by combining) the four flags --
+  -- it specifically means "can manage OTHER accounts", which none of the
+  -- four on their own should ever grant.
+  CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    is_admin      INTEGER NOT NULL DEFAULT 0,
+    can_view      INTEGER NOT NULL DEFAULT 1,
+    can_edit      INTEGER NOT NULL DEFAULT 0,
+    can_add       INTEGER NOT NULL DEFAULT 0,
+    can_remove    INTEGER NOT NULL DEFAULT 0,
+    created_at    TEXT NOT NULL
+  );
+
+  -- Session tokens live in the DB (not just memory) so a service restart
+  -- doesn't silently log everyone out. No foreign key on user_id --
+  -- node:sqlite's FK enforcement needs PRAGMA foreign_keys=ON, which isn't
+  -- set here, so integrity is kept explicitly in application code instead
+  -- (auth.js deletes a user's sessions when that user is removed).
+  CREATE TABLE IF NOT EXISTS sessions (
+    token      TEXT PRIMARY KEY,
+    user_id    INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+  );
 `);
 
 // picture_path was added after the table already existed in production —
@@ -487,6 +519,83 @@ function payroll({ start, end }) {
   `).all(start, end, start, end);
 }
 
+// --- user accounts + sessions -------------------------------------------------
+// Plain data-access functions -- password hashing/verification and session
+// token generation live in auth.js, not here, same separation as the rest
+// of this file (db.js never knows about HTTP/cookies, auth.js never writes
+// raw SQL).
+
+function countUsers() {
+  return db.prepare('SELECT COUNT(*) AS n FROM users').get().n;
+}
+
+function createUser({ username, passwordHash, isAdmin = false, canView = true, canEdit = false, canAdd = false, canRemove = false }) {
+  const result = db.prepare(`
+    INSERT INTO users (username, password_hash, is_admin, can_view, can_edit, can_add, can_remove, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(username, passwordHash, isAdmin ? 1 : 0, canView ? 1 : 0, canEdit ? 1 : 0, canAdd ? 1 : 0, canRemove ? 1 : 0, new Date().toISOString());
+  return Number(result.lastInsertRowid);
+}
+
+function getUserByUsername(username) {
+  return db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+}
+
+function getUserById(id) {
+  return db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+}
+
+// Excludes password_hash -- this is what the admin panel's user list uses,
+// which sends its response straight to the browser.
+function listUsers() {
+  return db.prepare(`
+    SELECT id, username, is_admin, can_view, can_edit, can_add, can_remove, created_at
+    FROM users ORDER BY username COLLATE NOCASE ASC
+  `).all();
+}
+
+function updateUserPermissions(id, { isAdmin, canView, canEdit, canAdd, canRemove }) {
+  db.prepare(`
+    UPDATE users SET is_admin = ?, can_view = ?, can_edit = ?, can_add = ?, can_remove = ? WHERE id = ?
+  `).run(isAdmin ? 1 : 0, canView ? 1 : 0, canEdit ? 1 : 0, canAdd ? 1 : 0, canRemove ? 1 : 0, id);
+}
+
+function updateUserPassword(id, passwordHash) {
+  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, id);
+}
+
+function deleteUser(id) {
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
+  db.prepare('DELETE FROM users WHERE id = ?').run(id);
+}
+
+function createSession(token, userId, expiresAt) {
+  db.prepare('INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)')
+    .run(token, userId, new Date().toISOString(), expiresAt);
+}
+
+// One query, not two -- joins straight to the owning user so a request
+// carrying a session cookie only ever costs a single lookup.
+function getSessionWithUser(token) {
+  return db.prepare(`
+    SELECT s.token, s.expires_at, u.*
+    FROM sessions s JOIN users u ON u.id = s.user_id
+    WHERE s.token = ?
+  `).get(token);
+}
+
+function deleteSession(token) {
+  db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+}
+
+function deleteSessionsForUser(userId) {
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
+}
+
+function pruneExpiredSessions() {
+  db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(new Date().toISOString());
+}
+
 module.exports = {
   db, upsertEmployee, employeeName, insertCheckin, listCheckins, stats, clearCheckins, DB_PATH,
   setCheckinPicture, getCheckinById, isSameSession, periodOf, getCheckoutAfter, getPollIntervalMs,
@@ -494,4 +603,6 @@ module.exports = {
   listEmployees, setEmployeeWage, deleteEmployeeLocal, getSetting, setSetting, payroll,
   setEmployeeCard, employeeByCard, isCardOnlyEmployeeNo, nextLocalEmployeeNo,
   insertPendingCard, listPendingCards, getPendingCard, setPendingCardNo, findArmedPendingCard, deletePendingCard,
+  countUsers, createUser, getUserByUsername, getUserById, listUsers, updateUserPermissions, updateUserPassword, deleteUser,
+  createSession, getSessionWithUser, deleteSession, deleteSessionsForUser, pruneExpiredSessions,
 };

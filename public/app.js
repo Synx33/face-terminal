@@ -1,3 +1,19 @@
+// Every /api/* route now requires a session (see server.js's auth wiring) --
+// a 401 from ANY fetch anywhere in this file means the session cookie is
+// missing or expired (30-day expiry, or an admin deleted the account, or a
+// password change signed every other session out). Intercepting fetch once
+// here means every individual call site doesn't need its own 401 check --
+// the login page itself is the one exempt path, so a failed login attempt
+// shows its own error instead of bouncing straight back to itself.
+const _nativeFetch = window.fetch;
+window.fetch = async (...args) => {
+  const res = await _nativeFetch(...args);
+  if (res.status === 401 && !String(args[0]).includes('/api/auth/login')) {
+    window.location.href = '/login.html';
+  }
+  return res;
+};
+
 const dateInput = document.getElementById('dateFilter');
 const rowsEl = document.getElementById('rows');
 const emptyMsg = document.getElementById('emptyMsg');
@@ -758,6 +774,187 @@ payrollBody.addEventListener('keydown', (e) => {
   }
 });
 
+// --- current user / logout / admin-only UI gating ----------------------------
+
+let currentUser = null;
+
+async function loadCurrentUser() {
+  const res = await fetch('/api/auth/me');
+  if (!res.ok) return; // the fetch interceptor above already redirects to /login.html on 401
+  currentUser = await res.json();
+  document.getElementById('currentUserLabel').textContent = currentUser.username;
+  document.getElementById('myAccountLabel').textContent = `შესული ხართ როგორც: ${currentUser.username}${currentUser.isAdmin ? ' (ადმინისტრატორი)' : ''}`;
+  document.body.classList.toggle('perm-no-add', !currentUser.isAdmin && !currentUser.canAdd);
+  document.body.classList.toggle('perm-no-edit', !currentUser.isAdmin && !currentUser.canEdit);
+  document.body.classList.toggle('perm-no-remove', !currentUser.isAdmin && !currentUser.canRemove);
+  document.querySelectorAll('[data-admin-only]').forEach((el) => { el.hidden = !currentUser.isAdmin; });
+  if (currentUser.isAdmin) { loadUsers(); loadBackups(); }
+}
+
+document.getElementById('logoutBtn').addEventListener('click', async () => {
+  await fetch('/api/auth/logout', { method: 'POST' });
+  window.location.href = '/login.html';
+});
+
+document.getElementById('changeMyPassBtn').addEventListener('click', async () => {
+  const currentPassword = document.getElementById('currentPassInput').value;
+  const newPassword = document.getElementById('newPassInput').value;
+  const msg = document.getElementById('changeMyPassMsg');
+  if (!newPassword || newPassword.length < 8) {
+    msg.className = 'enroll-msg err';
+    msg.textContent = 'ახალი პაროლი უნდა შედგებოდეს მინიმუმ 8 სიმბოლოსგან';
+    return;
+  }
+  msg.className = 'enroll-msg';
+  msg.textContent = 'ინახება…';
+  try {
+    const res = await fetch('/api/auth/change-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ currentPassword, newPassword }),
+    });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.error || 'ვერ შესრულდა');
+    msg.className = 'enroll-msg ok';
+    msg.textContent = 'პაროლი შეიცვალა.';
+    document.getElementById('currentPassInput').value = '';
+    document.getElementById('newPassInput').value = '';
+  } catch (err) {
+    msg.className = 'enroll-msg err';
+    msg.textContent = err.message;
+  }
+});
+
+// --- user account management (admin only) ------------------------------------
+
+const userGrid = document.getElementById('userGrid');
+const PERM_LABELS = { canView: 'ნახვა', canEdit: 'რედაქტირება', canAdd: 'დამატება', canRemove: 'წაშლა', isAdmin: 'ადმინისტრატორი' };
+const PERM_TO_FIELD = { canView: 'can_view', canEdit: 'can_edit', canAdd: 'can_add', canRemove: 'can_remove', isAdmin: 'is_admin' };
+
+function renderUserCard(u) {
+  const el = document.createElement('div');
+  el.className = 'user-card';
+  const isSelf = currentUser && u.id === currentUser.id;
+  el.innerHTML = `
+    <div class="user-name">${escapeHtml(u.username)}${u.is_admin ? '<span class="admin-tag">ადმინი</span>' : ''}</div>
+    <div class="perm-toggles">
+      ${Object.entries(PERM_LABELS).map(([key, label]) => `
+        <label><input type="checkbox" data-perm="${key}" ${u[PERM_TO_FIELD[key]] ? 'checked' : ''} /> ${label}</label>
+      `).join('')}
+    </div>
+    <div class="field-row">
+      <input type="password" class="reset-pass-input" placeholder="ახალი პაროლი (არასავალდებულო)" autocomplete="new-password" />
+    </div>
+    <div class="user-row">
+      <button class="save-user primary">შენახვა</button>
+      <button class="discard" ${isSelf ? 'disabled title="საკუთარი ანგარიშის წაშლა შეუძლებელია"' : ''}>წაშლა</button>
+    </div>
+    <div class="pending-status"></div>
+  `;
+
+  const statusEl = el.querySelector('.pending-status');
+  const saveBtn = el.querySelector('.save-user');
+  const discardBtn = el.querySelector('.discard');
+
+  saveBtn.addEventListener('click', async () => {
+    const body = {};
+    el.querySelectorAll('[data-perm]').forEach((cb) => { body[cb.dataset.perm] = cb.checked; });
+    const newPass = el.querySelector('.reset-pass-input').value;
+    if (newPass) {
+      if (newPass.length < 8) {
+        statusEl.className = 'pending-status err';
+        statusEl.textContent = 'ახალი პაროლი უნდა შედგებოდეს მინიმუმ 8 სიმბოლოსგან';
+        return;
+      }
+      body.password = newPass;
+    }
+    saveBtn.disabled = true;
+    statusEl.className = 'pending-status';
+    statusEl.textContent = 'ინახება…';
+    try {
+      const res = await fetch(`/api/users/${u.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || 'ვერ შესრულდა');
+      statusEl.className = 'pending-status ok';
+      statusEl.textContent = 'შენახულია';
+      el.querySelector('.reset-pass-input').value = '';
+      loadUsers();
+    } catch (err) {
+      statusEl.className = 'pending-status err';
+      statusEl.textContent = err.message;
+    } finally {
+      saveBtn.disabled = false;
+    }
+  });
+
+  discardBtn.addEventListener('click', async () => {
+    if (isSelf) return;
+    if (!confirm(`წავშალოთ მომხმარებელი "${u.username}"?`)) return;
+    discardBtn.disabled = true;
+    try {
+      const res = await fetch(`/api/users/${u.id}`, { method: 'DELETE' });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || 'ვერ შესრულდა');
+      el.remove();
+    } catch (err) {
+      statusEl.className = 'pending-status err';
+      statusEl.textContent = err.message;
+      discardBtn.disabled = false;
+    }
+  });
+
+  return el;
+}
+
+async function loadUsers() {
+  const res = await fetch('/api/users');
+  if (!res.ok) return;
+  const users = await res.json();
+  userGrid.innerHTML = '';
+  for (const u of users) userGrid.appendChild(renderUserCard(u));
+}
+
+document.getElementById('createUserBtn').addEventListener('click', async () => {
+  const username = document.getElementById('newUserName').value.trim();
+  const password = document.getElementById('newUserPass').value;
+  const msg = document.getElementById('userMsg');
+  if (!username) {
+    msg.className = 'enroll-msg err';
+    msg.textContent = 'მომხმარებლის სახელი სავალდებულოა';
+    return;
+  }
+  if (!password || password.length < 8) {
+    msg.className = 'enroll-msg err';
+    msg.textContent = 'პაროლი უნდა შედგებოდეს მინიმუმ 8 სიმბოლოსგან';
+    return;
+  }
+  const body = { username, password };
+  document.querySelectorAll('#newUserPerms [data-perm]').forEach((cb) => { body[cb.dataset.perm] = cb.checked; });
+  msg.className = 'enroll-msg';
+  msg.textContent = 'იქმნება…';
+  try {
+    const res = await fetch('/api/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.error || 'ვერ შესრულდა');
+    msg.className = 'enroll-msg ok';
+    msg.textContent = `მომხმარებელი "${username}" შეიქმნა.`;
+    document.getElementById('newUserName').value = '';
+    document.getElementById('newUserPass').value = '';
+    loadUsers();
+  } catch (err) {
+    msg.className = 'enroll-msg err';
+    msg.textContent = err.message;
+  }
+});
+
 // --- settings -----------------------------------------------------------------
 
 const deviceIpInput = document.getElementById('deviceIpInput');
@@ -1114,6 +1311,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !lightbox.hidden) closeLightbox();
 });
 
+loadCurrentUser();
 load();
 loadPending();
 loadPendingCards();
@@ -1122,6 +1320,5 @@ loadCardDeviceInfo();
 loadSettings();
 loadEmployeeFilterOptions();
 loadWorkers();
-loadBackups();
 calcPayroll();
 connectLive();
