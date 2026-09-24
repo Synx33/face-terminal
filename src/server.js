@@ -682,6 +682,54 @@ app.delete('/api/pending-cards/:id', auth.requirePermission('can_add'), (req, re
   res.json({ ok: true });
 });
 
+// Bulk import for a site whose cards were already enrolled elsewhere before
+// this app existed (e.g. straight on the controller, or via iVMS-4200) --
+// this device's SDK can't read back what's already enrolled on it at all
+// (GET_CARD_CFG fails with error 17, confirmed exhaustively, every command
+// tried, including bare reads -- a real firmware limitation, not a gap
+// here), so there's no way to discover that list automatically. This is
+// the deliberate manual alternative: whoever has visibility into the
+// existing list (the controller's own menu, iVMS, a spreadsheet someone
+// kept) types or pastes it in directly, one name+card pair per row. Same
+// "card-only, no face terminal involved at all" local enrollment as the
+// regular pending-cards claim flow -- see its own comment for why.
+app.post('/api/employees/bulk-cards', auth.requirePermission('can_add'), (req, res) => {
+  const { entries } = req.body || {};
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return res.status(400).json({ error: 'entries must be a non-empty array of {name, cardNo}' });
+  }
+  const created = [];
+  const failed = [];
+  for (const entry of entries) {
+    const name = typeof entry?.name === 'string' ? entry.name.trim() : '';
+    const cardNo = typeof entry?.cardNo === 'string' ? entry.cardNo.trim() : '';
+    if (!name || !cardNo) {
+      failed.push({ name: entry?.name ?? '', cardNo: entry?.cardNo ?? '', error: 'სახელი და ბარათის ნომერი სავალდებულოა' });
+      continue;
+    }
+    const employeeNo = db.nextLocalEmployeeNo();
+    db.upsertEmployee(employeeNo, name, null);
+    try {
+      db.setEmployeeCard(employeeNo, cardNo);
+    } catch (err) {
+      // Different from the single-claim flow's "leave the employee row"
+      // choice: there, a card conflict means an admin is looking at ONE
+      // specific real tap and can decide what to do about it. Here, a
+      // failed row in a pasted LIST is far more likely a typo or an
+      // accidental duplicate paste -- leaving a stray card-less employee
+      // behind for every such mistake would just be confusing clutter, so
+      // a failed row is rolled back completely instead: either the whole
+      // row succeeds (name + card both), or nothing about it persists.
+      db.deleteEmployeeLocal(employeeNo);
+      failed.push({ name, cardNo, error: `ეს ბარათის ნომერი უკვე დაკავებულია: ${err.message}` });
+      continue;
+    }
+    created.push({ employeeNo, name, cardNo });
+  }
+  logger.log(`[enroll] bulk import: ${created.length} created, ${failed.length} failed`);
+  res.json({ created, failed });
+});
+
 // --- worker management (list / rename / wage / remove) ------------------------
 app.get('/api/employees', auth.requirePermission('can_view'), (req, res) => {
   res.json(db.listEmployees());

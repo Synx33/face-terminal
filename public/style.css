@@ -519,7 +519,8 @@ button:disabled { opacity: 0.5; cursor: default; transform: none; }
    server-side auth.requirePermission()/requireAdmin() checks -- hiding a
    button here is not itself a security measure. */
 body.perm-no-add #faceCaptureSection,
-body.perm-no-add #cardEnrollSection { display: none; }
+body.perm-no-add #cardEnrollSection,
+body.perm-no-add #bulkCardImportSection { display: none; }
 
 body.perm-no-edit #workerGrid .save,
 body.perm-no-edit #workerGrid .card-row,
@@ -527,6 +528,32 @@ body.perm-no-edit .wage-input-inline,
 body.perm-no-edit .save-wage-btn { display: none; }
 
 body.perm-no-remove #workerGrid .discard { display: none; }
+
+/* --- bulk card import ------------------------------------------------------ */
+
+#bulkCardInput {
+  width: 100%;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  padding: 0.6rem 0.7rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  resize: vertical;
+  margin-bottom: 0.6rem;
+}
+
+#bulkCardResults {
+  margin-top: 0.7rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.82rem;
+}
+#bulkCardResults .bulk-row { display: flex; gap: 0.5rem; align-items: baseline; }
+#bulkCardResults .bulk-row.ok { color: var(--accent-ink); }
+#bulkCardResults .bulk-row.err { color: var(--danger); }
 
 /* --- payroll table -------------------------------------------------------------- */
 

@@ -150,6 +150,18 @@ The dashboard is organized into three tabs — **ჩანაწერები*
   camera, a card check-in never triggers a photo capture, unlike the face
   terminal.
 
+  **Bulk import for a site whose cards are already enrolled elsewhere**
+  (straight on the controller, or via iVMS-4200, from before this app was
+  installed): Workers tab → "მასობრივი დამატება" — paste a list, one
+  name+card pair per line (comma- or tab-separated), no physical tap
+  needed. This exists specifically because the controller's SDK can't read
+  back its own enrolled card list at all (confirmed — see below), so
+  there's no way to discover an existing list automatically; whoever has
+  visibility into it (the controller's own menu, iVMS, a spreadsheet)
+  transcribes it in manually instead. A failed row (duplicate/already-
+  assigned card number) rolls back cleanly, no stray card-less employee
+  left behind.
+
   **Setup (Windows)**: this needs Hikvision's own Windows "Device Network
   SDK" DLLs to actually load on the site laptop — `vendor/hcnetsdk/win64/`
   is `.gitignore`d (deliberately not committed to this public repo: it's

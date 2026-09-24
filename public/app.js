@@ -450,6 +450,72 @@ listenCardBtn.addEventListener('click', async () => {
   }
 });
 
+// --- bulk card import (cards already enrolled elsewhere, e.g. iVMS) ---------
+// One name+card pair per line -- tab-separated if the line has a tab in it
+// (the natural shape of rows pasted straight out of a spreadsheet/grid),
+// comma-separated otherwise (the natural shape of typing it by hand).
+// Splits on the FIRST separator only, since a name is never expected to
+// contain a tab, but could in principle contain a comma.
+function parseBulkCardLine(line) {
+  const sep = line.includes('\t') ? '\t' : ',';
+  const idx = line.indexOf(sep);
+  if (idx === -1) return null;
+  const name = line.slice(0, idx).trim();
+  const cardNo = line.slice(idx + 1).trim();
+  if (!name || !cardNo) return null;
+  return { name, cardNo };
+}
+
+document.getElementById('bulkCardImportBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('bulkCardImportBtn');
+  const textarea = document.getElementById('bulkCardInput');
+  const msg = document.getElementById('bulkCardMsg');
+  const resultsEl = document.getElementById('bulkCardResults');
+  const lines = textarea.value.split('\n').map((l) => l.trim()).filter(Boolean);
+  const entries = [];
+  const unparsed = [];
+  for (const line of lines) {
+    const parsed = parseBulkCardLine(line);
+    if (parsed) entries.push(parsed);
+    else unparsed.push(line);
+  }
+  if (entries.length === 0) {
+    msg.className = 'enroll-msg err';
+    msg.textContent = 'ჯერ ჩასვით სია — თითო სტრიქონზე სახელი და ბარათის ნომერი, მძიმით ან თაბულაციით გამოყოფილი';
+    return;
+  }
+  btn.disabled = true;
+  msg.className = 'enroll-msg';
+  msg.textContent = 'იმპორტდება…';
+  resultsEl.innerHTML = '';
+  try {
+    const res = await fetch('/api/employees/bulk-cards', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entries }),
+    });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.error || 'ვერ შესრულდა');
+    msg.className = result.failed.length ? 'enroll-msg err' : 'enroll-msg ok';
+    msg.textContent = `დაემატა ${result.created.length}, ვერ დაემატა ${result.failed.length}${unparsed.length ? ` (${unparsed.length} სტრიქონი ვერ ამოვიცანი)` : ''}`;
+    resultsEl.innerHTML = [
+      ...result.created.map((r) => `<div class="bulk-row ok">✓ ${escapeHtml(r.name)} (#${r.employeeNo}) — ${escapeHtml(r.cardNo)}</div>`),
+      ...result.failed.map((r) => `<div class="bulk-row err">✗ ${escapeHtml(r.name || '?')} — ${escapeHtml(r.error)}</div>`),
+      ...unparsed.map((l) => `<div class="bulk-row err">✗ ვერ ამოვიცანი: ${escapeHtml(l)}</div>`),
+    ].join('');
+    if (result.created.length) {
+      textarea.value = '';
+      loadWorkers();
+      loadEmployeeFilterOptions();
+    }
+  } catch (err) {
+    msg.className = 'enroll-msg err';
+    msg.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 async function loadDeviceInfo() {
   try {
     const res = await fetch('/api/device');

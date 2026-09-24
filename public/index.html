@@ -75,6 +75,16 @@
           <div class="pending-grid" id="pendingCardGrid"></div>
         </div>
 
+        <div class="subsection" id="bulkCardImportSection">
+          <h2>მასობრივი დამატება (უკვე არსებული ბარათები)</h2>
+          <p class="panel-hint">თუ თანამშრომლები უკვე დამატებულია კონტროლერში სხვა გზით (მაგ. iVMS-ით, ან საიტის გახსნამდე) — ფიზიკური მიდება საჭირო არ არის, უბრალოდ ჩასვით სია აქ, თითო სტრიქონზე ერთი ადამიანი, სახელი და ბარათის ნომერი მძიმით ან თაბულაციით გამოყოფილი.</p>
+          <textarea id="bulkCardInput" rows="6" placeholder="გიორგი მაისურაძე, 4015874134
+ნინო ხაჩატურიანი, 3982718"></textarea>
+          <button id="bulkCardImportBtn" class="primary">იმპორტი</button>
+          <div class="enroll-msg" id="bulkCardMsg"></div>
+          <div id="bulkCardResults"></div>
+        </div>
+
         <div class="subsection">
           <h2>რეგისტრირებული თანამშრომლები</h2>
           <p class="panel-hint">შეცვალეთ სახელი ან დღიური ანაზღაურება, ან წაშალეთ ვინმე — წაშლისას იშლება მისი სახეც და წვდომაც თავად ტერმინალიდან, არა მხოლოდ ამ დაფიდან.</p>
