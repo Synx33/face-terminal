@@ -182,22 +182,13 @@ if (!existingUserCols.includes('can_export')) {
   db.exec('ALTER TABLE users ADD COLUMN can_export INTEGER NOT NULL DEFAULT 0');
 }
 
-// direction_override: a manual in/out correction for one specific checkin
-// row. Exists because the direction shown for a scan is normally GUESSED
-// from wall-clock time (see periodOf() below) -- fine for a single reader,
-// but at a site with a separate physical entry reader and exit reader
-// wired to the same DS-K2802 controller, that guess can be wrong (both
-// readers can fire after the checkout boundary and both get labeled
-// "out"). Confirmed live and by two independent methods that this
-// controller's firmware (2019, "Value Series") does not report which
-// physical reader a swipe came from anywhere in its alarm payload -- see
-// cardSdk.js's byAlarmInfoType comment -- so there is no byte to decode
-// here; a human correcting the occasional wrong label is the only
-// reliable fix available for this hardware. NULL (the default) means
-// "still just the time-based guess".
+// reader_no: which physical reader terminal (1, 2, 3, ...) on the DS-K2802
+// a card tap came in on -- see getCardExitReaderNo() above for why this
+// exists. NULL for every face-terminal row (ISAPI has no such concept) and
+// for any card tap from before this column existed.
 const existingCheckinCols = db.prepare('PRAGMA table_info(checkins)').all().map((c) => c.name);
-if (!existingCheckinCols.includes('direction_override')) {
-  db.exec('ALTER TABLE checkins ADD COLUMN direction_override TEXT');
+if (!existingCheckinCols.includes('reader_no')) {
+  db.exec('ALTER TABLE checkins ADD COLUMN reader_no INTEGER');
 }
 
 const upsertEmployeeStmt = db.prepare(`
@@ -301,10 +292,28 @@ function getPollIntervalMs() {
   return Number(getSetting('poll_interval_ms', process.env.POLL_INTERVAL_MS || 5000));
 }
 
+// A site can wire a separate physical entry reader and exit reader to the
+// same DS-K2802 controller's two reader ports -- the wall-clock guess above
+// gets that wrong whenever both readers get used after the checkout
+// boundary. Confirmed live against a real site doing exactly this: byte
+// offset 236 of the ACS alarm payload (see cardSdk.js's OFFSET_READER_NO)
+// carries the physical reader number (1, 2, 3, 4, ...) printed on the
+// controller's own reader terminals, and it flipped 1<->3 exactly when the
+// reader was physically moved between terminals across many real taps.
+// This setting is which reader number means "out" -- any other reader
+// number present means "in" (see listCheckins' CASE below); unset (the
+// default) means every site so far, a single reader with no way to tell
+// entry from exit at all, where the wall-clock guess is the only option.
+function getCardExitReaderNo() {
+  const raw = getSetting('card_exit_reader_no', '');
+  const n = Number(raw);
+  return raw !== '' && Number.isInteger(n) ? n : null;
+}
+
 const insertCheckinStmt = db.prepare(`
   INSERT OR IGNORE INTO checkins
-    (device_id, serial_no, event_time, received_at, employee_no, name, verify_mode, door_no, major_event, minor_event, source, raw)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (device_id, serial_no, event_time, received_at, employee_no, name, verify_mode, door_no, major_event, minor_event, source, raw, reader_no)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 // A card-only event (DS-K2802) may arrive with a cardNo but no employeeNo of
@@ -334,6 +343,7 @@ function insertCheckin(ev, source, deviceId = 'face') {
     ev.minorEvent ?? null,
     source,
     ev.raw ?? null,
+    ev.readerNo ?? null,
   );
   return result.changes > 0 ? Number(result.lastInsertRowid) : null;
 }
@@ -384,14 +394,6 @@ function periodOf(eventTime, boundary) {
   return eventTime.slice(11, 16) < boundary ? 'in' : 'out';
 }
 
-/** Manually corrects the in/out label for one checkin row -- see the
- * direction_override migration comment above for why this exists at all.
- * direction must be 'in' or 'out'; null clears the override and goes back
- * to the time-based guess. */
-function setCheckinDirectionOverride(id, direction) {
-  db.prepare('UPDATE checkins SET direction_override = ? WHERE id = ?').run(direction, id);
-}
-
 /** True if this scan falls in the same day + in/out period as the employee's previous scan (nothing new to show -- still the same visit). */
 function isSameSession(employeeNo, eventTime, excludeId) {
   const prior = priorCheckinForEmployee(employeeNo, eventTime, excludeId);
@@ -404,7 +406,7 @@ function isSameSession(employeeNo, eventTime, excludeId) {
 function listCheckins({ date, employeeNo, limit = 200 } = {}) {
   let sql = `
     WITH scoped AS (
-      SELECT id, device_id, serial_no, event_time, received_at, employee_no, name, verify_mode, door_no, source, picture_path, direction_override
+      SELECT id, device_id, serial_no, event_time, received_at, employee_no, name, verify_mode, door_no, source, picture_path, reader_no
       FROM checkins WHERE 1=1
   `;
   const params = [];
@@ -420,18 +422,23 @@ function listCheckins({ date, employeeNo, limit = 200 } = {}) {
     ),
     labeled AS (
       SELECT *,
-        COALESCE(
-          direction_override,
-          CASE WHEN employee_no IS NULL THEN NULL
-               WHEN substr(event_time, 12, 5) < ? THEN 'in'
-               ELSE 'out'
-          END
-        ) AS direction
+        CASE WHEN employee_no IS NULL THEN NULL
+             -- Reader-number wins over the wall-clock guess whenever both
+             -- this row and the site's configured exit-reader setting have
+             -- one: any reader other than the configured exit reader counts
+             -- as "in", the configured one counts as "out". Sites without
+             -- this setting (reader_no IS NULL or the setting is unset)
+             -- fall through to the time boundary exactly as before.
+             WHEN ? IS NOT NULL AND reader_no IS NOT NULL THEN
+               CASE WHEN reader_no = ? THEN 'out' ELSE 'in' END
+             WHEN substr(event_time, 12, 5) < ? THEN 'in'
+             ELSE 'out'
+        END AS direction
       FROM scoped
     )
     SELECT
       MIN(id) AS id, device_id, serial_no, event_time, received_at, employee_no, name, verify_mode, door_no, source, picture_path,
-      direction, direction_override
+      direction
     FROM labeled
     -- COALESCE(direction, id): rows with no employee_no have a NULL
     -- direction, which would otherwise group every such row on the same
@@ -451,7 +458,8 @@ function listCheckins({ date, employeeNo, limit = 200 } = {}) {
     END
     ORDER BY event_time DESC LIMIT ?
   `;
-  params.push(getCheckoutAfter(), limit);
+  const exitReaderNo = getCardExitReaderNo();
+  params.push(exitReaderNo, exitReaderNo, getCheckoutAfter(), limit);
   return db.prepare(sql).all(...params);
 }
 
@@ -638,7 +646,7 @@ function pruneExpiredSessions() {
 
 module.exports = {
   db, upsertEmployee, employeeName, insertCheckin, listCheckins, stats, clearCheckins, DB_PATH,
-  setCheckinPicture, getCheckinById, isSameSession, periodOf, setCheckinDirectionOverride, getCheckoutAfter, getPollIntervalMs,
+  setCheckinPicture, getCheckinById, isSameSession, periodOf, getCheckoutAfter, getCardExitReaderNo, getPollIntervalMs,
   insertPendingWorker, listPendingWorkers, getPendingWorker, deletePendingWorker,
   listEmployees, setEmployeeWage, deleteEmployeeLocal, getSetting, setSetting, payroll,
   setEmployeeCard, employeeByCard, isCardOnlyEmployeeNo, nextLocalEmployeeNo,

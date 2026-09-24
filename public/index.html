@@ -223,6 +223,11 @@
           <input type="text" id="checkoutAfterInput" placeholder="19:00" class="input-narrow" />
         </div>
         <p class="hint-text">ამ დროამდე ნებისმიერი სკანირება ითვლება "შემოსვლად" და არ იქმნება ახალი ჩანაწერი განმეორებით სკანირებაზე. ამ დროის შემდეგ პირველი სკანირება ითვლება "გასვლად".</p>
+        <div class="field-row">
+          <label for="cardExitReaderInput">გასასვლელი ბარათის წამკითხველის ნომერი</label>
+          <input type="text" id="cardExitReaderInput" placeholder="ცარიელი = გამორთული" class="input-narrow" inputmode="numeric" />
+        </div>
+        <p class="hint-text">მხოლოდ იმ საიტებისთვის, სადაც შესვლისა და გასვლისთვის ცალკე ბარათის წამკითხველია ერთ კონტროლერზე (DS-K2802). მიუთითეთ იმ წამკითხველის ნომერი (მაგ. 3), რომელიც გასვლისთვისაა გამოყენებული — კონტროლერზე ბარათის ტერმინალზე დაბეჭდილი ნომერი. ცარიელი ველი ნიშნავს, რომ მიმართულება მხოლოდ დროის მიხედვით განისაზღვრება (ზემოთ).</p>
         <button id="saveAppSettingsBtn" class="primary">პარამეტრების შენახვა</button>
         <div class="enroll-msg" id="appSettingsMsg"></div>
       </div>

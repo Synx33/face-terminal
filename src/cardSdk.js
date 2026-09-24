@@ -186,6 +186,17 @@ const NET_USER_LEN = 16;
 const OFFSET_ACS_EVENT_INFO = 196;
 const OFFSET_CARD_NO = OFFSET_ACS_EVENT_INFO + 4; // past struAcsEventInfo's own dwSize
 const CARD_NO_LEN = 32;
+// A dword straight after byCardNo that's always 1 in every real capture so
+// far sits at OFFSET_CARD_NO + CARD_NO_LEN (232); this is the one right
+// after THAT. Verified live at a real two-reader site (a separate physical
+// entry reader and exit reader wired to the same controller's reader
+// terminals 1 and 3): this field read 1 for every tap on the reader wired
+// to terminal 1 and 3 for every tap on the reader wired to terminal 3,
+// across many real taps, and flipped exactly when the reader was
+// physically moved from one terminal to the other -- not a guess from a
+// single sample, a reproduced pattern across ~15 real events. This is the
+// field db.js's getCardExitReaderNo() compares against.
+const OFFSET_READER_NO = OFFSET_CARD_NO + CARD_NO_LEN + 4;
 
 // Device timestamps are deliberately NOT used for eventTime (see connect()'s
 // onEvent construction) -- this function still parses/returns them for
@@ -221,6 +232,13 @@ function extractCardNo(buf) {
   return raw || null;
 }
 
+// See OFFSET_READER_NO above. null (not 0) when the buffer's too short to
+// even reach that offset -- 0 would look like a real reader number.
+function extractReaderNo(buf) {
+  if (buf.length < OFFSET_READER_NO + 4) return null;
+  return buf.readUInt32LE(OFFSET_READER_NO);
+}
+
 /**
  * Opens a session against the card-reader controller and subscribes to
  * real-time access-control alarms. onEvent(event) is called for every
@@ -247,6 +265,7 @@ function connect({ ip, port = 8000, user, pass }, onEvent) {
       const raw = Buffer.from(koffi.decode(pAlarmInfo, koffi.array('uint8_t', dwBufLen)));
       const info = decodeAcsAlarmInfo(raw);
       const cardNo = extractCardNo(raw);
+      const readerNo = extractReaderNo(raw);
       // Deliberately NOT using the device's own embedded timestamp here.
       // Verified live, post-firmware-update: the device's reported clock is
       // currently ~8 hours ahead of true UTC (Beijing/China Standard Time,
@@ -263,7 +282,7 @@ function connect({ ip, port = 8000, user, pass }, onEvent) {
       // everywhere else: Georgia-local wall-clock time with a +04:00
       // suffix, which is what periodOf()/the checkout-boundary logic in
       // db.js expects to find when it slices out "HH:MM" from this string.
-      onEvent({ cardNo, eventTime: isoWithOffset(new Date()), dwMajor: info.dwMajor, dwMinor: info.dwMinor, netUser: info.netUser, raw });
+      onEvent({ cardNo, readerNo, eventTime: isoWithOffset(new Date()), dwMajor: info.dwMajor, dwMinor: info.dwMinor, netUser: info.netUser, raw });
     } catch (err) {
       logger.error('[card-sdk] failed to decode alarm payload:', err.message);
     }
@@ -353,4 +372,4 @@ function connect({ ip, port = 8000, user, pass }, onEvent) {
   return { close, lUserID, alarmHandle };
 }
 
-module.exports = { connect, decodeAcsAlarmInfo, extractCardNo, COMM_ALARM_ACS };
+module.exports = { connect, decodeAcsAlarmInfo, extractCardNo, extractReaderNo, COMM_ALARM_ACS };

@@ -271,26 +271,6 @@ app.get('/api/checkins', auth.requirePermission('can_view'), (req, res) => {
   res.json(db.listCheckins({ date, employeeNo, limit: safeLimit }));
 });
 
-// Manual in/out correction for one checkin row. Exists specifically because
-// direction is a wall-clock GUESS (see db.js periodOf()), and at a site with
-// a separate physical entry reader and exit reader wired to the same
-// DS-K2802 controller, that guess can be wrong -- confirmed live that this
-// controller's firmware doesn't report which physical reader a swipe came
-// from anywhere in its alarm payload (see cardSdk.js), so there's no field
-// to read instead. can_edit, not can_add/can_remove -- this corrects an
-// existing record, the same permission that already covers editing an
-// employee's own details.
-app.put('/api/checkins/:id/direction', auth.requirePermission('can_edit'), (req, res) => {
-  const id = Number(req.params.id);
-  const { direction } = req.body || {};
-  if (direction !== 'in' && direction !== 'out') {
-    return res.status(400).json({ error: 'direction must be "in" or "out"' });
-  }
-  if (!db.getCheckinById(id)) return res.status(404).json({ error: 'checkin not found' });
-  db.setCheckinDirectionOverride(id, direction);
-  res.json({ id, direction });
-});
-
 app.get('/api/device', auth.requirePermission('can_view'), (req, res) => {
   res.json({ model: 'DS-K1T343EWX', ip: hasDeviceIp() ? getDeviceIp() : null, auth: authState.status() });
 });
@@ -375,6 +355,7 @@ app.get('/api/settings', auth.requirePermission('can_view'), (req, res) => {
     currency: db.getSetting('currency', '₾'),
     pollIntervalMs: db.getPollIntervalMs(),
     checkoutAfter: db.getCheckoutAfter(),
+    cardExitReaderNo: db.getCardExitReaderNo(),
     cardDeviceEnabled: cardDeviceConfigured(),
     cardDeviceIp: process.env.CARD_DEVICE_IP || null,
     cardDeviceUser: process.env.CARD_DEVICE_USER || process.env.DEVICE_USER || null,
@@ -447,7 +428,7 @@ app.post('/api/settings/card-device-credentials', auth.requireAdmin, (req, res) 
 });
 
 app.post('/api/settings/app', auth.requireAdmin, (req, res) => {
-  const { siteName, currency, pollIntervalMs, checkoutAfter } = req.body || {};
+  const { siteName, currency, pollIntervalMs, checkoutAfter, cardExitReaderNo } = req.body || {};
 
   if (siteName !== undefined) {
     if (typeof siteName !== 'string' || !siteName.trim()) {
@@ -475,6 +456,19 @@ app.post('/api/settings/app', auth.requireAdmin, (req, res) => {
     }
     db.setSetting('checkout_after', checkoutAfter);
   }
+  // Empty string clears it (single-reader sites, the default) -- see
+  // db.js's getCardExitReaderNo() for what this does. Anything else must be
+  // a whole number, the physical reader number printed on the controller's
+  // own reader terminal (e.g. 3), not a boolean or an index.
+  if (cardExitReaderNo !== undefined) {
+    if (cardExitReaderNo === '' || cardExitReaderNo === null) {
+      db.setSetting('card_exit_reader_no', '');
+    } else if (!Number.isInteger(Number(cardExitReaderNo)) || Number(cardExitReaderNo) < 1) {
+      return res.status(400).json({ error: 'exit reader number must be a positive whole number, or blank to disable' });
+    } else {
+      db.setSetting('card_exit_reader_no', Number(cardExitReaderNo));
+    }
+  }
   logger.log('[settings] app settings updated');
   res.json({
     ok: true,
@@ -482,6 +476,7 @@ app.post('/api/settings/app', auth.requireAdmin, (req, res) => {
     currency: db.getSetting('currency', '₾'),
     pollIntervalMs: db.getPollIntervalMs(),
     checkoutAfter: db.getCheckoutAfter(),
+    cardExitReaderNo: db.getCardExitReaderNo(),
   });
 });
 
@@ -1068,14 +1063,9 @@ function onCardEvent(event) {
   // added specifically to answer "did a real tap reach the software at
   // all, and what did it look like" from the journal directly, without
   // needing a separate scratch script each time that question comes up.
-  // Full raw bytes included specifically to find which field identifies
-  // WHICH physical reader a swipe came from (a site can wire a separate
-  // entry and exit reader to the same controller's two reader ports) --
-  // not yet decoded anywhere, since it's never been needed until now.
-  // Comparing two real captures (same card, entry reader vs. exit reader)
-  // byte-for-byte will show exactly which offset differs, the same method
-  // that found every other field in this struct.
-  logger.log(`[card] event received: major=${event.dwMajor} minor=${event.dwMinor} cardNo=${event.cardNo ?? '(none)'} netUser=${event.netUser ?? ''} raw=${event.raw ? event.raw.toString('hex') : '(none)'}`);
+  // readerNo (see cardSdk.js's extractReaderNo) is what a two-reader site's
+  // getCardExitReaderNo() setting gets compared against for direction.
+  logger.log(`[card] event received: major=${event.dwMajor} minor=${event.dwMinor} cardNo=${event.cardNo ?? '(none)'} readerNo=${event.readerNo ?? '(none)'} netUser=${event.netUser ?? ''} raw=${event.raw ? event.raw.toString('hex') : '(none)'}`);
   // Non-swipe alarm-channel traffic (confirmed live: e.g. an admin login
   // shows up on this same feed as dwMajor=3, "operation") has no parseable
   // card number — extractCardNo() already returns null for those (verified
@@ -1104,6 +1094,7 @@ function onCardEvent(event) {
   const insertedId = db.insertCheckin({
     eventTime: event.eventTime, // already a formatted "+04:00" string (cardSdk.js's isoWithOffset), not a Date
     cardNo: event.cardNo,
+    readerNo: event.readerNo,
     serialNo: Date.now(),
     // cardNo kept here even though employeeNo already resolved it above --
     // a card enrolled on the device itself (iVMS-4200, its own menu) but
@@ -1111,7 +1102,7 @@ function onCardEvent(event) {
     // and without this the actual card number would be gone for good the
     // moment this row is written, leaving no way to ever identify which
     // physical card an "(უცნობი)" row even was.
-    raw: JSON.stringify({ dwMajor: event.dwMajor, dwMinor: event.dwMinor, cardNo: event.cardNo }),
+    raw: JSON.stringify({ dwMajor: event.dwMajor, dwMinor: event.dwMinor, cardNo: event.cardNo, readerNo: event.readerNo }),
   }, 'push', 'card');
   if (insertedId) onNewCheckin(insertedId);
 }
