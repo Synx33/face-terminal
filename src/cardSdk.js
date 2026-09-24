@@ -312,6 +312,16 @@ function connect({ ip, port = 8000, user, pass }, onEvent) {
   const setupParam = {
     dwSize: koffi.sizeof('NET_DVR_SETUPALARM_PARAM'),
     byLevel: 0,
+    // Tried 1 here (requests the newer/larger NET_DVR_ACS_EVENT_INFO
+    // variant, which on other Hikvision SDKs carries dwCardReaderNo/
+    // dwDoorNo) to see if this device's alarm feed could be made to report
+    // which physical reader a swipe came from. Confirmed live: the call
+    // still succeeds, but the returned struct is byte-for-byte the same
+    // size (352 total / 104 substruct) as with 0 -- this firmware (2019,
+    // "HCNetSDK version 6.0.2.35 build20190411") ignores the flag
+    // entirely. Back to 0 since 1 buys nothing; the real fix for the
+    // entry/exit problem has to be something other than this struct (see
+    // db.js periodOf() / the manual override, not another byte offset).
     byAlarmInfoType: 0,
     byRetAlarmTypeV40: 0,
     byRetDevInfoVersion: 0,

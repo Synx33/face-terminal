@@ -105,10 +105,18 @@ function avatarHtml(row) {
   return initials(row.name);
 }
 
-function directionBadge(direction) {
+function directionBadge(direction, id) {
   if (!direction) return '';
   const label = direction === 'in' ? 'შემოსვლა' : 'გასვლა';
-  return `<span class="badge ${direction}">${label}</span>`;
+  // data-checkin-id makes this clickable (see the delegated listener below)
+  // for anyone with can_edit -- the direction shown is a wall-clock GUESS,
+  // wrong whenever a site has a separate entry/exit reader the controller
+  // can't tell apart (see server.js's PUT /api/checkins/:id/direction
+  // comment). body.perm-no-edit (set in loadCurrentUser) turns off the
+  // pointer cursor/hover for anyone without that permission; the click
+  // handler itself also re-checks, so this is inert either way, not just
+  // visually disabled.
+  return `<span class="badge ${direction} direction-badge" data-checkin-id="${id}" title="დაწკაპეთ მიმართულების შესაცვლელად">${label}</span>`;
 }
 
 // Only the exception (a card-reader check-in) gets a marker — the face
@@ -132,10 +140,40 @@ function renderRow(row, fresh) {
       <div class="no">#${row.employee_no ?? '—'}</div>
     </div>
     <div class="time">${timeOnly(row.event_time)}</div>
-    <div class="badges">${directionBadge(row.direction)}${deviceBadge(row.device_id)}</div>
+    <div class="badges">${directionBadge(row.direction, row.id)}${deviceBadge(row.device_id)}</div>
   `;
   return el;
 }
+
+// Delegated (rows are re-created on every load()/live event, so a
+// per-element listener would need re-attaching each time) -- clicking a
+// direction badge flips it in<->out and persists the correction. Silently
+// does nothing without can_edit, matching every other write action in this
+// app being gated the same way.
+rowsEl.addEventListener('click', async (e) => {
+  const badge = e.target.closest('.direction-badge');
+  if (!badge) return;
+  if (!currentUser || (!currentUser.isAdmin && !currentUser.canEdit)) return;
+  const id = badge.dataset.checkinId;
+  const next = badge.classList.contains('in') ? 'out' : 'in';
+  badge.classList.add('pending');
+  try {
+    const res = await fetch(`/api/checkins/${id}/direction`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ direction: next }),
+    });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.error || 'ვერ შესრულდა');
+    badge.classList.remove('in', 'out');
+    badge.classList.add(next);
+    badge.textContent = next === 'in' ? 'შემოსვლა' : 'გასვლა';
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    badge.classList.remove('pending');
+  }
+});
 
 async function load() {
   const date = dateInput.value;

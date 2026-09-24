@@ -182,6 +182,24 @@ if (!existingUserCols.includes('can_export')) {
   db.exec('ALTER TABLE users ADD COLUMN can_export INTEGER NOT NULL DEFAULT 0');
 }
 
+// direction_override: a manual in/out correction for one specific checkin
+// row. Exists because the direction shown for a scan is normally GUESSED
+// from wall-clock time (see periodOf() below) -- fine for a single reader,
+// but at a site with a separate physical entry reader and exit reader
+// wired to the same DS-K2802 controller, that guess can be wrong (both
+// readers can fire after the checkout boundary and both get labeled
+// "out"). Confirmed live and by two independent methods that this
+// controller's firmware (2019, "Value Series") does not report which
+// physical reader a swipe came from anywhere in its alarm payload -- see
+// cardSdk.js's byAlarmInfoType comment -- so there is no byte to decode
+// here; a human correcting the occasional wrong label is the only
+// reliable fix available for this hardware. NULL (the default) means
+// "still just the time-based guess".
+const existingCheckinCols = db.prepare('PRAGMA table_info(checkins)').all().map((c) => c.name);
+if (!existingCheckinCols.includes('direction_override')) {
+  db.exec('ALTER TABLE checkins ADD COLUMN direction_override TEXT');
+}
+
 const upsertEmployeeStmt = db.prepare(`
   INSERT INTO employees (employee_no, name, daily_wage, updated_at) VALUES (?, ?, ?, ?)
   ON CONFLICT(employee_no) DO UPDATE SET
@@ -366,6 +384,14 @@ function periodOf(eventTime, boundary) {
   return eventTime.slice(11, 16) < boundary ? 'in' : 'out';
 }
 
+/** Manually corrects the in/out label for one checkin row -- see the
+ * direction_override migration comment above for why this exists at all.
+ * direction must be 'in' or 'out'; null clears the override and goes back
+ * to the time-based guess. */
+function setCheckinDirectionOverride(id, direction) {
+  db.prepare('UPDATE checkins SET direction_override = ? WHERE id = ?').run(direction, id);
+}
+
 /** True if this scan falls in the same day + in/out period as the employee's previous scan (nothing new to show -- still the same visit). */
 function isSameSession(employeeNo, eventTime, excludeId) {
   const prior = priorCheckinForEmployee(employeeNo, eventTime, excludeId);
@@ -378,7 +404,7 @@ function isSameSession(employeeNo, eventTime, excludeId) {
 function listCheckins({ date, employeeNo, limit = 200 } = {}) {
   let sql = `
     WITH scoped AS (
-      SELECT id, device_id, serial_no, event_time, received_at, employee_no, name, verify_mode, door_no, source, picture_path
+      SELECT id, device_id, serial_no, event_time, received_at, employee_no, name, verify_mode, door_no, source, picture_path, direction_override
       FROM checkins WHERE 1=1
   `;
   const params = [];
@@ -394,15 +420,18 @@ function listCheckins({ date, employeeNo, limit = 200 } = {}) {
     ),
     labeled AS (
       SELECT *,
-        CASE WHEN employee_no IS NULL THEN NULL
-             WHEN substr(event_time, 12, 5) < ? THEN 'in'
-             ELSE 'out'
-        END AS direction
+        COALESCE(
+          direction_override,
+          CASE WHEN employee_no IS NULL THEN NULL
+               WHEN substr(event_time, 12, 5) < ? THEN 'in'
+               ELSE 'out'
+          END
+        ) AS direction
       FROM scoped
     )
     SELECT
       MIN(id) AS id, device_id, serial_no, event_time, received_at, employee_no, name, verify_mode, door_no, source, picture_path,
-      direction
+      direction, direction_override
     FROM labeled
     -- COALESCE(direction, id): rows with no employee_no have a NULL
     -- direction, which would otherwise group every such row on the same
@@ -609,7 +638,7 @@ function pruneExpiredSessions() {
 
 module.exports = {
   db, upsertEmployee, employeeName, insertCheckin, listCheckins, stats, clearCheckins, DB_PATH,
-  setCheckinPicture, getCheckinById, isSameSession, periodOf, getCheckoutAfter, getPollIntervalMs,
+  setCheckinPicture, getCheckinById, isSameSession, periodOf, setCheckinDirectionOverride, getCheckoutAfter, getPollIntervalMs,
   insertPendingWorker, listPendingWorkers, getPendingWorker, deletePendingWorker,
   listEmployees, setEmployeeWage, deleteEmployeeLocal, getSetting, setSetting, payroll,
   setEmployeeCard, employeeByCard, isCardOnlyEmployeeNo, nextLocalEmployeeNo,

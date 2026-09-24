@@ -318,6 +318,13 @@ button:disabled { opacity: 0.5; cursor: default; transform: none; }
 .badge.out { background: transparent; color: var(--out); border: 1px solid var(--border); }
 .badge.device-card { background: transparent; color: var(--text-faint); border: 1px solid var(--border); font-weight: 500; }
 
+.direction-badge { cursor: pointer; }
+.direction-badge:hover { filter: brightness(0.92); }
+.direction-badge.pending { opacity: 0.5; pointer-events: none; }
+/* can_edit gate -- same convention as perm-no-add/perm-no-remove/perm-no-export elsewhere in this file */
+body.perm-no-edit .direction-badge { cursor: default; }
+body.perm-no-edit .direction-badge:hover { filter: none; }
+
 .badges {
   display: flex;
   align-items: center;

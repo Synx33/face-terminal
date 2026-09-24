@@ -271,6 +271,26 @@ app.get('/api/checkins', auth.requirePermission('can_view'), (req, res) => {
   res.json(db.listCheckins({ date, employeeNo, limit: safeLimit }));
 });
 
+// Manual in/out correction for one checkin row. Exists specifically because
+// direction is a wall-clock GUESS (see db.js periodOf()), and at a site with
+// a separate physical entry reader and exit reader wired to the same
+// DS-K2802 controller, that guess can be wrong -- confirmed live that this
+// controller's firmware doesn't report which physical reader a swipe came
+// from anywhere in its alarm payload (see cardSdk.js), so there's no field
+// to read instead. can_edit, not can_add/can_remove -- this corrects an
+// existing record, the same permission that already covers editing an
+// employee's own details.
+app.put('/api/checkins/:id/direction', auth.requirePermission('can_edit'), (req, res) => {
+  const id = Number(req.params.id);
+  const { direction } = req.body || {};
+  if (direction !== 'in' && direction !== 'out') {
+    return res.status(400).json({ error: 'direction must be "in" or "out"' });
+  }
+  if (!db.getCheckinById(id)) return res.status(404).json({ error: 'checkin not found' });
+  db.setCheckinDirectionOverride(id, direction);
+  res.json({ id, direction });
+});
+
 app.get('/api/device', auth.requirePermission('can_view'), (req, res) => {
   res.json({ model: 'DS-K1T343EWX', ip: hasDeviceIp() ? getDeviceIp() : null, auth: authState.status() });
 });
