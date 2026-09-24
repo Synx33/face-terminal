@@ -71,6 +71,7 @@ function bootstrapAdmin() {
     canEdit: true,
     canAdd: true,
     canRemove: true,
+    canExport: true,
   });
   if (generated) {
     logger.log(`[auth] no accounts existed yet -- created admin account "${username}" with a generated password: ${password}`);

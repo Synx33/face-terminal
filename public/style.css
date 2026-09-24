@@ -529,6 +529,21 @@ body.perm-no-edit .save-wage-btn { display: none; }
 
 body.perm-no-remove #workerGrid .discard { display: none; }
 
+body.perm-no-export #exportCsvBtn,
+body.perm-no-export #exportPayrollBtn { display: none; }
+
+.worker-search {
+  width: 100%;
+  max-width: 320px;
+  padding: 0.5rem 0.7rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  margin-bottom: 0.9rem;
+}
+
 /* --- bulk card import ------------------------------------------------------ */
 
 #bulkCardInput {
@@ -675,6 +690,11 @@ dialog#settingsModal::backdrop {
    click on the dashboard. This rule's higher specificity (class + attribute)
    is what actually fixes it. */
 .lightbox[hidden] { display: none; }
+
+/* Same specificity-tie bug as the lightbox above, same fix -- .pending-card
+   sets display:flex, so the worker search filter's card.hidden=true would
+   otherwise leave every "hidden" card still visibly laid out. */
+.pending-card[hidden] { display: none; }
 
 .lightbox {
   position: fixed;

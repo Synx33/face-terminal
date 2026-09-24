@@ -82,6 +82,7 @@ db.exec(`
     can_edit      INTEGER NOT NULL DEFAULT 0,
     can_add       INTEGER NOT NULL DEFAULT 0,
     can_remove    INTEGER NOT NULL DEFAULT 0,
+    can_export    INTEGER NOT NULL DEFAULT 0,
     created_at    TEXT NOT NULL
   );
 
@@ -169,6 +170,16 @@ if (!existingEmployeeCols.includes('daily_wage')) {
 if (!existingEmployeeCols.includes('card_no')) {
   db.exec('ALTER TABLE employees ADD COLUMN card_no TEXT');
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_employees_card_no ON employees(card_no) WHERE card_no IS NOT NULL');
+}
+
+// can_export was added after some sites already had real accounts created --
+// same ALTER-if-missing pattern as card_no above. Defaults to 0 (off) for
+// existing accounts on upgrade -- an admin explicitly turns it on per
+// person rather than every pre-existing account silently gaining a new
+// capability the moment this code ships.
+const existingUserCols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+if (!existingUserCols.includes('can_export')) {
+  db.exec('ALTER TABLE users ADD COLUMN can_export INTEGER NOT NULL DEFAULT 0');
 }
 
 const upsertEmployeeStmt = db.prepare(`
@@ -529,11 +540,11 @@ function countUsers() {
   return db.prepare('SELECT COUNT(*) AS n FROM users').get().n;
 }
 
-function createUser({ username, passwordHash, isAdmin = false, canView = true, canEdit = false, canAdd = false, canRemove = false }) {
+function createUser({ username, passwordHash, isAdmin = false, canView = true, canEdit = false, canAdd = false, canRemove = false, canExport = false }) {
   const result = db.prepare(`
-    INSERT INTO users (username, password_hash, is_admin, can_view, can_edit, can_add, can_remove, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(username, passwordHash, isAdmin ? 1 : 0, canView ? 1 : 0, canEdit ? 1 : 0, canAdd ? 1 : 0, canRemove ? 1 : 0, new Date().toISOString());
+    INSERT INTO users (username, password_hash, is_admin, can_view, can_edit, can_add, can_remove, can_export, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(username, passwordHash, isAdmin ? 1 : 0, canView ? 1 : 0, canEdit ? 1 : 0, canAdd ? 1 : 0, canRemove ? 1 : 0, canExport ? 1 : 0, new Date().toISOString());
   return Number(result.lastInsertRowid);
 }
 
@@ -549,15 +560,15 @@ function getUserById(id) {
 // which sends its response straight to the browser.
 function listUsers() {
   return db.prepare(`
-    SELECT id, username, is_admin, can_view, can_edit, can_add, can_remove, created_at
+    SELECT id, username, is_admin, can_view, can_edit, can_add, can_remove, can_export, created_at
     FROM users ORDER BY username COLLATE NOCASE ASC
   `).all();
 }
 
-function updateUserPermissions(id, { isAdmin, canView, canEdit, canAdd, canRemove }) {
+function updateUserPermissions(id, { isAdmin, canView, canEdit, canAdd, canRemove, canExport }) {
   db.prepare(`
-    UPDATE users SET is_admin = ?, can_view = ?, can_edit = ?, can_add = ?, can_remove = ? WHERE id = ?
-  `).run(isAdmin ? 1 : 0, canView ? 1 : 0, canEdit ? 1 : 0, canAdd ? 1 : 0, canRemove ? 1 : 0, id);
+    UPDATE users SET is_admin = ?, can_view = ?, can_edit = ?, can_add = ?, can_remove = ?, can_export = ? WHERE id = ?
+  `).run(isAdmin ? 1 : 0, canView ? 1 : 0, canEdit ? 1 : 0, canAdd ? 1 : 0, canRemove ? 1 : 0, canExport ? 1 : 0, id);
 }
 
 function updateUserPassword(id, passwordHash) {

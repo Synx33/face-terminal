@@ -123,6 +123,7 @@ app.get('/api/auth/me', (req, res) => {
     canEdit: Boolean(req.user.can_edit),
     canAdd: Boolean(req.user.can_add),
     canRemove: Boolean(req.user.can_remove),
+    canExport: Boolean(req.user.can_export),
   });
 });
 
@@ -153,7 +154,7 @@ app.get('/api/users', auth.requireAdmin, (req, res) => {
 });
 
 app.post('/api/users', auth.requireAdmin, (req, res) => {
-  const { username, password, isAdmin, canView, canEdit, canAdd, canRemove } = req.body || {};
+  const { username, password, isAdmin, canView, canEdit, canAdd, canRemove, canExport } = req.body || {};
   if (!username || typeof username !== 'string' || !username.trim()) {
     return res.status(400).json({ error: 'მომხმარებლის სახელი სავალდებულოა' });
   }
@@ -166,7 +167,7 @@ app.post('/api/users', auth.requireAdmin, (req, res) => {
   const id = db.createUser({
     username: username.trim(),
     passwordHash: auth.hashPassword(password),
-    isAdmin: Boolean(isAdmin), canView: Boolean(canView), canEdit: Boolean(canEdit), canAdd: Boolean(canAdd), canRemove: Boolean(canRemove),
+    isAdmin: Boolean(isAdmin), canView: Boolean(canView), canEdit: Boolean(canEdit), canAdd: Boolean(canAdd), canRemove: Boolean(canRemove), canExport: Boolean(canExport),
   });
   logger.log(`[auth] ${req.user.username} created account "${username.trim()}"`);
   res.json({ id });
@@ -176,7 +177,7 @@ app.put('/api/users/:id', auth.requireAdmin, (req, res) => {
   const id = Number(req.params.id);
   const target = db.getUserById(id);
   if (!target) return res.status(404).json({ error: 'მომხმარებელი ვერ მოიძებნა' });
-  const { isAdmin, canView, canEdit, canAdd, canRemove, password } = req.body || {};
+  const { isAdmin, canView, canEdit, canAdd, canRemove, canExport, password } = req.body || {};
   // The very last admin can't demote themselves (or be demoted) -- there
   // would then be no account left able to fix that, or manage any other
   // account, ever again, short of hand-editing the database.
@@ -192,6 +193,7 @@ app.put('/api/users/:id', auth.requireAdmin, (req, res) => {
     canEdit: canEdit ?? Boolean(target.can_edit),
     canAdd: canAdd ?? Boolean(target.can_add),
     canRemove: canRemove ?? Boolean(target.can_remove),
+    canExport: canExport ?? Boolean(target.can_export),
   });
   if (password) {
     if (password.length < 8) return res.status(400).json({ error: 'პაროლი უნდა შედგებოდეს მინიმუმ 8 სიმბოლოსგან' });
@@ -877,7 +879,7 @@ app.get('/api/payroll', auth.requirePermission('can_view'), (req, res) => {
 // striping, and (for payroll) a grand-total row. See src/reports.js.
 const XLSX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
-app.get('/api/checkins/export', auth.requirePermission('can_view'), async (req, res) => {
+app.get('/api/checkins/export', auth.requirePermission('can_export'), async (req, res) => {
   const { date, employeeNo } = req.query;
   const rows = db.listCheckins({ date, employeeNo, limit: 1_000_000 });
   const siteName = db.getSetting('site_name', 'დასწრების ჟურნალი');
@@ -894,7 +896,7 @@ app.get('/api/checkins/export', auth.requirePermission('can_view'), async (req, 
   res.end();
 });
 
-app.get('/api/payroll/export', auth.requirePermission('can_view'), async (req, res) => {
+app.get('/api/payroll/export', auth.requirePermission('can_export'), async (req, res) => {
   const { start, end } = req.query;
   if (!start || !end) {
     return res.status(400).json({ error: 'start and end query params are required' });
@@ -1046,7 +1048,14 @@ function onCardEvent(event) {
   // added specifically to answer "did a real tap reach the software at
   // all, and what did it look like" from the journal directly, without
   // needing a separate scratch script each time that question comes up.
-  logger.log(`[card] event received: major=${event.dwMajor} minor=${event.dwMinor} cardNo=${event.cardNo ?? '(none)'} netUser=${event.netUser ?? ''}`);
+  // Full raw bytes included specifically to find which field identifies
+  // WHICH physical reader a swipe came from (a site can wire a separate
+  // entry and exit reader to the same controller's two reader ports) --
+  // not yet decoded anywhere, since it's never been needed until now.
+  // Comparing two real captures (same card, entry reader vs. exit reader)
+  // byte-for-byte will show exactly which offset differs, the same method
+  // that found every other field in this struct.
+  logger.log(`[card] event received: major=${event.dwMajor} minor=${event.dwMinor} cardNo=${event.cardNo ?? '(none)'} netUser=${event.netUser ?? ''} raw=${event.raw ? event.raw.toString('hex') : '(none)'}`);
   // Non-swipe alarm-channel traffic (confirmed live: e.g. an admin login
   // shows up on this same feed as dwMajor=3, "operation") has no parseable
   // card number — extractCardNo() already returns null for those (verified

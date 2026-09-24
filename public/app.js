@@ -728,7 +728,28 @@ async function loadWorkers() {
   const workers = await res.json();
   workerGrid.innerHTML = '';
   for (const w of workers) workerGrid.appendChild(renderWorkerCard(w));
+  filterWorkerGrid(); // re-apply whatever search text is already typed (e.g. after a save/add refresh)
 }
+
+// Client-side, not a server round-trip -- the whole roster is already
+// rendered in the DOM (this app's worker counts are in the hundreds, not
+// the scale where that'd be a real cost), so filtering by toggling
+// .hidden per card is instant and needs no new API endpoint at all.
+const workerSearchInput = document.getElementById('workerSearchInput');
+const workerSearchEmpty = document.getElementById('workerSearchEmpty');
+function filterWorkerGrid() {
+  const query = workerSearchInput.value.trim().toLowerCase();
+  let anyVisible = false;
+  for (const card of workerGrid.children) {
+    const name = (card.querySelector('.name-input')?.value || '').toLowerCase();
+    const employeeNo = (card.dataset.employeeNo || '').toLowerCase();
+    const match = !query || name.includes(query) || employeeNo.includes(query);
+    card.hidden = !match;
+    if (match) anyVisible = true;
+  }
+  workerSearchEmpty.hidden = anyVisible || workerGrid.children.length === 0;
+}
+workerSearchInput.addEventListener('input', filterWorkerGrid);
 
 // --- payroll -------------------------------------------------------------------
 
@@ -853,6 +874,7 @@ async function loadCurrentUser() {
   document.body.classList.toggle('perm-no-add', !currentUser.isAdmin && !currentUser.canAdd);
   document.body.classList.toggle('perm-no-edit', !currentUser.isAdmin && !currentUser.canEdit);
   document.body.classList.toggle('perm-no-remove', !currentUser.isAdmin && !currentUser.canRemove);
+  document.body.classList.toggle('perm-no-export', !currentUser.isAdmin && !currentUser.canExport);
   document.querySelectorAll('[data-admin-only]').forEach((el) => { el.hidden = !currentUser.isAdmin; });
   if (currentUser.isAdmin) { loadUsers(); loadBackups(); }
 }
@@ -894,8 +916,8 @@ document.getElementById('changeMyPassBtn').addEventListener('click', async () =>
 // --- user account management (admin only) ------------------------------------
 
 const userGrid = document.getElementById('userGrid');
-const PERM_LABELS = { canView: 'ნახვა', canEdit: 'რედაქტირება', canAdd: 'დამატება', canRemove: 'წაშლა', isAdmin: 'ადმინისტრატორი' };
-const PERM_TO_FIELD = { canView: 'can_view', canEdit: 'can_edit', canAdd: 'can_add', canRemove: 'can_remove', isAdmin: 'is_admin' };
+const PERM_LABELS = { canView: 'ნახვა', canEdit: 'რედაქტირება', canAdd: 'დამატება', canRemove: 'წაშლა', canExport: 'რეპორტის ამოღება', isAdmin: 'ადმინისტრატორი' };
+const PERM_TO_FIELD = { canView: 'can_view', canEdit: 'can_edit', canAdd: 'can_add', canRemove: 'can_remove', canExport: 'can_export', isAdmin: 'is_admin' };
 
 function renderUserCard(u) {
   const el = document.createElement('div');

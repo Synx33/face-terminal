@@ -88,7 +88,9 @@
         <div class="subsection">
           <h2>რეგისტრირებული თანამშრომლები</h2>
           <p class="panel-hint">შეცვალეთ სახელი ან დღიური ანაზღაურება, ან წაშალეთ ვინმე — წაშლისას იშლება მისი სახეც და წვდომაც თავად ტერმინალიდან, არა მხოლოდ ამ დაფიდან.</p>
+          <input type="text" id="workerSearchInput" class="worker-search" placeholder="ძებნა სახელით ან ნომრით…" />
           <div class="worker-grid" id="workerGrid"></div>
+          <div class="empty" id="workerSearchEmpty" hidden>ვერაფერი მოიძებნა.</div>
         </div>
       </section>
 
@@ -259,6 +261,7 @@
             <label><input type="checkbox" data-perm="canEdit" /> რედაქტირება</label>
             <label><input type="checkbox" data-perm="canAdd" /> დამატება</label>
             <label><input type="checkbox" data-perm="canRemove" /> წაშლა</label>
+            <label><input type="checkbox" data-perm="canExport" /> რეპორტის ამოღება</label>
             <label><input type="checkbox" data-perm="isAdmin" /> ადმინისტრატორი</label>
           </div>
           <button id="createUserBtn" class="primary">მომხმარებლის შექმნა</button>
