@@ -20,12 +20,15 @@ This is the deploy target — the site runs this from a Windows laptop.
    ```powershell
    winget install -e --id OpenJS.NodeJS.LTS
    ```
-2. Open a normal (non-administrator) PowerShell in the project folder and run:
+2. Find that site's terminal's MAC address (a sticker on the unit itself,
+   or its own local menu under Network settings) — every site has a
+   different one, so there's no default to fall back on here.
+3. Open a normal (non-administrator) PowerShell in the project folder and run:
    ```powershell
    Set-ExecutionPolicy -Scope Process Bypass
-   .\windows\install.ps1 -DevicePass "<the terminal's admin password>"
+   .\windows\install.ps1 -DeviceMac "AA:BB:CC:DD:EE:FF" -DevicePass "<the terminal's admin password>"
    ```
-   (leave off `-DevicePass` and it'll prompt for it interactively instead)
+   (leave off either `-DeviceMac` or `-DevicePass` and it'll prompt for them interactively instead)
 
 Installing a Windows service and opening a firewall port both need admin
 rights — the installer detects it isn't elevated and relaunches itself,
@@ -42,7 +45,7 @@ dashboard URL to open in a browser.
 
 Customize with parameters if needed:
 ```powershell
-.\windows\install.ps1 -DevicePass "..." -Port 8080 -DeviceIp 10.0.0.50
+.\windows\install.ps1 -DeviceMac "AA:BB:CC:DD:EE:FF" -DevicePass "..." -Port 8080 -DeviceIp 10.0.0.50
 ```
 
 Service management:
@@ -110,7 +113,8 @@ The dashboard is organized into three tabs — **ჩანაწერები*
 - **Live check-in feed** — polls the terminal's own event log (not push
   notifications — see below) every 1.5s (customizable), shows who badged
   in/out with a photo, in real time. Filterable by date and by worker;
-  exports to CSV.
+  exports to a formatted Excel report (title block, colored header, zebra
+  striping — not a raw CSV).
 - **Optional card-reader controller (DS-K2802)** — a second, independent
   device this dashboard can listen to alongside the face terminal for
   card-swipe check-ins, useful anywhere face recognition is too
@@ -177,9 +181,13 @@ The dashboard is organized into three tabs — **ჩანაწერები*
 - **Check-in/check-out** — this terminal has no in/out mode selector, so
   direction is derived from time of day: any scan before the configured
   checkout time (default 19:00) is "in", the first scan at or after it is
-  "out". Any further scans that day on the same side of that boundary are
-  ignored entirely — walking past the camera again at lunch doesn't create
-  a new row or change the displayed time, only crossing the boundary does.
+  "out". Any further **face** scans that day on the same side of that
+  boundary are ignored entirely — walking past the camera again at lunch
+  doesn't create a new row or change the displayed time, only crossing the
+  boundary does. **Card-reader taps are never collapsed this way** — a
+  face scan can passively re-trigger just from standing in view, but a
+  card tap needs a deliberate physical action, so every single tap is
+  always read, saved, and shown immediately, with no time-of-day gating.
 - **Add worker** — capture a face photo first (no name needed), assign a
   name and (optionally) a daily wage whenever whoever's in charge has a
   moment. Creates the user and uploads the face on the actual device.
@@ -190,7 +198,9 @@ The dashboard is organized into three tabs — **ჩანაწერები*
 - **Payroll** — for any date range, computes each worker's distinct days
   present × their daily wage (a day counts once no matter how many times
   they scanned it). The daily wage is editable right from the payroll table
-  too, not only from the Workers tab. Exports to CSV.
+  too, not only from the Workers tab. Exports to a formatted Excel report,
+  including each employee's actual attended dates (not just a count) and a
+  grand-total row.
 - **Settings** — site name, currency symbol, poll interval, and the
   checkout-time boundary are all live-editable, no restart needed. Also:
   pin/change the device IP and credentials, clear check-in history,

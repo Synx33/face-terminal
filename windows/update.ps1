@@ -19,7 +19,7 @@
 param(
     [string] $InstallPath = "$env:ProgramFiles\face-terminal",
     [string] $ServiceName = "face-terminal",
-    [string] $RepoUrl     = "https://github.com/Synx33/face-terminal.git"
+    [string] $RepoUrl     = "https://github.com/Synx33/face-terminal-app.git"
 )
 
 $ErrorActionPreference = "Stop"

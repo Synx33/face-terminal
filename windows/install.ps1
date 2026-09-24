@@ -26,7 +26,18 @@ param(
     [string] $ListenHost  = "0.0.0.0",
     [int]    $Port        = 3070,
     [string] $DeviceIp    = "",
-    [string] $DeviceMac   = "BC:9B:5E:1A:1D:87",
+    # No default on purpose -- every site's physical terminal has a
+    # different MAC address, and this value drives auto-discovery (see
+    # README). A hardcoded default here used to be one specific site's
+    # terminal, which is exactly the kind of thing that silently breaks a
+    # different client's install if whoever runs this forgets to override
+    # it: discovery would search THEIR network forever for OUR test unit's
+    # MAC, never find it, and just sit there failing. Find it on a sticker
+    # on the terminal itself, its own local menu (Network settings), or
+    # `arp -a` from this laptop right after pinging the terminal once if
+    # its IP is already known.
+    [Parameter(Mandatory = $true)]
+    [string] $DeviceMac,
     [string] $DeviceUser  = "admin",
     # No default on purpose -- this is a real credential for a physical
     # access-control device, never hardcode it in a script that lives in
