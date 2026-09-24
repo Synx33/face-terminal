@@ -160,7 +160,20 @@ The dashboard is organized into three tabs — **ჩანაწერები*
   visibility into it (the controller's own menu, iVMS, a spreadsheet)
   transcribes it in manually instead. A failed row (duplicate/already-
   assigned card number) rolls back cleanly, no stray card-less employee
-  left behind.
+  left behind. For a list too long to comfortably paste by hand,
+  `windows\bulk-import.ps1` does the same thing scripted from a local JSON
+  file — see the script's own header comment for usage. Deliberately reads
+  from a local file path only, never from anything committed to this
+  repo — a real site's employee roster is that site's own data, not
+  something that belongs in a public GitHub repo.
+
+  If iVMS-4200 is the source, note a real bug confirmed live in its Person
+  Information export (both CSV and XLSX): non-ASCII names (Georgian
+  confirmed, likely any non-Latin script) come out as literal `?`
+  characters — verified by inspecting the raw file bytes, not a display
+  artifact, and not fixable by changing Windows' system locale. Card
+  numbers and Person IDs are unaffected. Not a bug in this app — nothing
+  to fix here, just something to know going in if iVMS is the source.
 
   **Setup (Windows)**: this needs Hikvision's own Windows "Device Network
   SDK" DLLs to actually load on the site laptop — `vendor/hcnetsdk/win64/`
