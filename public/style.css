@@ -530,6 +530,7 @@ body.perm-no-edit .save-wage-btn { display: none; }
 body.perm-no-remove #workerGrid .discard { display: none; }
 
 body.perm-no-export #exportCsvBtn,
+body.perm-no-export #exportLast30Btn,
 body.perm-no-export #exportPayrollBtn { display: none; }
 
 .worker-search {

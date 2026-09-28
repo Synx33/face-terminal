@@ -592,6 +592,18 @@ document.getElementById('exportCsvBtn').addEventListener('click', () => {
   window.location.href = `/api/checkins/export?${params}`;
 });
 
+// -29 days (not -30) so "today" is included and the window is a full 30
+// calendar days end to end, same off-by-one reasoning as todayLocal() using
+// Georgia-local date parts rather than raw UTC.
+document.getElementById('exportLast30Btn').addEventListener('click', () => {
+  const end = todayLocal();
+  const startParts = georgiaParts(new Date(Date.now() - 29 * 24 * 3600_000));
+  const start = `${startParts.year}-${startParts.month}-${startParts.day}`;
+  const params = new URLSearchParams({ start, end });
+  if (employeeFilter.value) params.set('employeeNo', employeeFilter.value);
+  window.location.href = `/api/checkins/export?${params}`;
+});
+
 // --- worker management (list / rename / wage / remove) ------------------------
 
 const workerGrid = document.getElementById('workerGrid');

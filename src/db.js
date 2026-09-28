@@ -403,7 +403,12 @@ function isSameSession(employeeNo, eventTime, excludeId) {
   return periodOf(eventTime, boundary) === periodOf(prior.event_time, boundary);
 }
 
-function listCheckins({ date, employeeNo, limit = 200 } = {}) {
+// date is an exact single day; start/end is an inclusive range (both
+// "YYYY-MM-DD") -- used by the export's "last 30 days" option, since a
+// client wants a real multi-day attendance report, not just today's. date
+// and start/end are mutually exclusive in practice (the caller picks one),
+// but nothing stops both from being passed -- they'd just narrow together.
+function listCheckins({ date, start, end, employeeNo, limit = 200 } = {}) {
   let sql = `
     WITH scoped AS (
       SELECT id, device_id, serial_no, event_time, received_at, employee_no, name, verify_mode, door_no, source, picture_path, reader_no
@@ -413,6 +418,14 @@ function listCheckins({ date, employeeNo, limit = 200 } = {}) {
   if (date) {
     sql += ' AND substr(event_time, 1, 10) = ?';
     params.push(date);
+  }
+  if (start) {
+    sql += ' AND substr(event_time, 1, 10) >= ?';
+    params.push(start);
+  }
+  if (end) {
+    sql += ' AND substr(event_time, 1, 10) <= ?';
+    params.push(end);
   }
   if (employeeNo) {
     sql += ' AND employee_no = ?';

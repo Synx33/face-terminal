@@ -895,17 +895,22 @@ app.get('/api/payroll', auth.requirePermission('can_view'), (req, res) => {
 const XLSX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
 app.get('/api/checkins/export', auth.requirePermission('can_export'), async (req, res) => {
-  const { date, employeeNo } = req.query;
-  const rows = db.listCheckins({ date, employeeNo, limit: 1_000_000 });
+  const { date, start, end, employeeNo } = req.query;
+  if (start && end && start > end) {
+    return res.status(400).json({ error: 'start date must be before end date' });
+  }
+  const rows = db.listCheckins({ date, start, end, employeeNo, limit: 1_000_000 });
   const siteName = db.getSetting('site_name', 'დასწრების ჟურნალი');
   const filterParts = [];
-  filterParts.push(date ? `თარიღი: ${date}` : 'ყველა თარიღი');
+  if (start && end) filterParts.push(`თარიღი: ${start} — ${end}`);
+  else if (date) filterParts.push(`თარიღი: ${date}`);
+  else filterParts.push('ყველა თარიღი');
   if (employeeNo) {
     const empName = db.employeeName(employeeNo);
     filterParts.push(`თანამშრომელი: ${empName || `#${employeeNo}`}`);
   }
   const wb = await buildCheckinsReport(rows, { siteName, filterLabel: filterParts.join(' · ') });
-  const filename = `attendance-report${date ? `-${date}` : ''}.xlsx`;
+  const filename = `attendance-report${start && end ? `-${start}_to_${end}` : date ? `-${date}` : ''}.xlsx`;
   res.type(XLSX_CONTENT_TYPE).attachment(filename);
   await wb.xlsx.write(res);
   res.end();
