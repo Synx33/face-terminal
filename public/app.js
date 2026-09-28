@@ -595,10 +595,42 @@ document.getElementById('exportCsvBtn').addEventListener('click', () => {
 // -29 days (not -30) so "today" is included and the window is a full 30
 // calendar days end to end, same off-by-one reasoning as todayLocal() using
 // Georgia-local date parts rather than raw UTC.
-document.getElementById('exportLast30Btn').addEventListener('click', () => {
+function last30DaysRange() {
   const end = todayLocal();
   const startParts = georgiaParts(new Date(Date.now() - 29 * 24 * 3600_000));
   const start = `${startParts.year}-${startParts.month}-${startParts.day}`;
+  return { start, end };
+}
+
+document.getElementById('exportLast30Btn').addEventListener('click', () => {
+  const { start, end } = last30DaysRange();
+  const params = new URLSearchParams({ start, end });
+  if (employeeFilter.value) params.set('employeeNo', employeeFilter.value);
+  window.location.href = `/api/checkins/export?${params}`;
+});
+
+// Free-form alternative to the "last 30 days" shortcut above -- any period,
+// not just a fixed trailing window. Pre-filled with the same last-30-days
+// range so it's a sensible starting point, not empty date pickers.
+const exportRangeStart = document.getElementById('exportRangeStart');
+const exportRangeEnd = document.getElementById('exportRangeEnd');
+{
+  const { start, end } = last30DaysRange();
+  exportRangeStart.value = start;
+  exportRangeEnd.value = end;
+}
+
+document.getElementById('exportRangeBtn').addEventListener('click', () => {
+  const start = exportRangeStart.value;
+  const end = exportRangeEnd.value;
+  if (!start || !end) {
+    statusEl.textContent = 'მიუთითეთ დაწყებისა და დასრულების თარიღები';
+    return;
+  }
+  if (start > end) {
+    statusEl.textContent = 'დაწყების თარიღი უნდა იყოს დასრულების თარიღზე ადრე';
+    return;
+  }
   const params = new URLSearchParams({ start, end });
   if (employeeFilter.value) params.set('employeeNo', employeeFilter.value);
   window.location.href = `/api/checkins/export?${params}`;

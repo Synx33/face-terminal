@@ -531,6 +531,11 @@ body.perm-no-remove #workerGrid .discard { display: none; }
 
 body.perm-no-export #exportCsvBtn,
 body.perm-no-export #exportLast30Btn,
+body.perm-no-export #exportRangeStart,
+body.perm-no-export #exportRangeEnd,
+body.perm-no-export #exportRangeBtn,
+body.perm-no-export label[for="exportRangeStart"],
+body.perm-no-export label[for="exportRangeEnd"],
 body.perm-no-export #exportPayrollBtn { display: none; }
 
 .worker-search {
