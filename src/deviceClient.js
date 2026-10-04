@@ -119,7 +119,18 @@ async function fetchEnrolledFacePhoto(employeeNo) {
   if (!match) throw new Error(`no face record found on the device for employeeNo ${employeeNo} (search response: errorCode=${doc.errorCode} errorMsg=${doc.errorMsg} responseStatusStrg=${doc.responseStatusStrg} totalMatches=${doc.totalMatches})`);
   if (!match.faceURL) throw new Error(`device has a face record for employeeNo ${employeeNo} but didn't return a faceURL to fetch the picture from`);
 
-  const fetchUrl = match.faceURL.startsWith('http') ? match.faceURL : `${baseUrl()}${match.faceURL}`;
+  // Confirmed live: the raw faceURL comes back as e.g.
+  // ".../enrlFace/0/0000000002.jpg@WEB000000000883" -- that "@WEB..." tail
+  // increments by exactly 1 on every single FDSearch call within the same
+  // run (883, 884, 885, ...), which means it's a per-request token the
+  // device tacks onto the URL, not part of the real file path. Fetching
+  // that full string 404s every time ("Can't locate document: ...jpg@WEB...",
+  // the device's own static file server treating the whole thing as one
+  // filename that doesn't exist) -- stripping everything from "@" onward
+  // and fetching the plain path is the fix, on the theory that the real
+  // file just doesn't have that suffix in its actual name.
+  const cleanFaceUrl = match.faceURL.replace(/@.*$/, '');
+  const fetchUrl = cleanFaceUrl.startsWith('http') ? cleanFaceUrl : `${baseUrl()}${cleanFaceUrl}`;
   const res = await digestRequest({
     method: 'GET',
     url: fetchUrl,
