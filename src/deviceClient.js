@@ -116,20 +116,26 @@ async function fetchEnrolledFacePhoto(employeeNo) {
     FPID: String(employeeNo),
   });
   const match = doc.MatchList?.[0];
-  if (!match) throw new Error(`no face record found on the device for employeeNo ${employeeNo}`);
+  if (!match) throw new Error(`no face record found on the device for employeeNo ${employeeNo} (search response: errorCode=${doc.errorCode} errorMsg=${doc.errorMsg} responseStatusStrg=${doc.responseStatusStrg} totalMatches=${doc.totalMatches})`);
   if (!match.faceURL) throw new Error(`device has a face record for employeeNo ${employeeNo} but didn't return a faceURL to fetch the picture from`);
 
+  const fetchUrl = match.faceURL.startsWith('http') ? match.faceURL : `${baseUrl()}${match.faceURL}`;
   const res = await digestRequest({
     method: 'GET',
-    url: match.faceURL.startsWith('http') ? match.faceURL : `${baseUrl()}${match.faceURL}`,
+    url: fetchUrl,
     username: process.env.DEVICE_USER,
     password: process.env.DEVICE_PASS,
   });
   if (res.status === 401) {
     authState.recordAuthFailure();
-    throw new DeviceAuthError(`fetchEnrolledFacePhoto -> HTTP 401 fetching faceURL for employeeNo ${employeeNo}`);
+    throw new DeviceAuthError(`fetchEnrolledFacePhoto -> HTTP 401 fetching faceURL for employeeNo ${employeeNo} (raw faceURL: "${match.faceURL}", requested: ${fetchUrl})`);
   }
-  if (res.status !== 200) throw new Error(`fetchEnrolledFacePhoto -> HTTP ${res.status} fetching faceURL for employeeNo ${employeeNo}`);
+  // Raw faceURL + the resolved URL + a slice of the device's own response
+  // body included directly in the error -- this whole function is still
+  // unconfirmed against a real device (see the comment above), so when it
+  // fails the actual values matter far more than a bare status code for
+  // figuring out what's actually wrong.
+  if (res.status !== 200) throw new Error(`fetchEnrolledFacePhoto -> HTTP ${res.status} fetching faceURL for employeeNo ${employeeNo} (raw faceURL: "${match.faceURL}", requested: ${fetchUrl}, response: ${res.text.slice(0, 200)})`);
   authState.recordAuthSuccess();
   return res.buffer;
 }
