@@ -1226,6 +1226,31 @@ document.getElementById('backupNowBtn').addEventListener('click', async () => {
   }
 });
 
+document.getElementById('backfillPhotosBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('backfillPhotosBtn');
+  btn.disabled = true;
+  settingsMsg.className = 'enroll-msg ok';
+  settingsMsg.textContent = 'ფოტოები მოწყობილობიდან იტვირთება… ამას შეიძლება ცოტა ხანი დასჭირდეს.';
+  try {
+    const res = await fetch('/api/employees/backfill-photos', { method: 'POST' });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.error || 'ვერ შესრულდა');
+    if (result.updated.length === 0 && result.failed.length === 0) {
+      settingsMsg.textContent = 'ყველა თანამშრომელს უკვე აქვს საკუთარი პროფილის ფოტო — არაფერი გასაკეთებელი.';
+    } else {
+      settingsMsg.className = result.failed.length > 0 ? 'enroll-msg err' : 'enroll-msg ok';
+      settingsMsg.textContent = `წარმატებული: ${result.updated.length}, ვერ მოხერხდა: ${result.failed.length}` +
+        (result.failed.length > 0 ? ` (იხილეთ ლოგი დეტალებისთვის)` : '');
+    }
+    loadWorkers();
+  } catch (err) {
+    settingsMsg.className = 'enroll-msg err';
+    settingsMsg.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 document.getElementById('saveIpBtn').addEventListener('click', async () => {
   const ip = deviceIpInput.value.trim();
   ipMsg.className = 'enroll-msg';

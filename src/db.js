@@ -254,6 +254,20 @@ function setEmployeePicture(employeeNo, picturePath) {
   db.prepare('UPDATE employees SET picture_path = ? WHERE employee_no = ?').run(picturePath, String(employeeNo));
 }
 
+// The employees table's OWN picture_path column, unlike listEmployees()'
+// COALESCE'd version above -- used to find who genuinely has no profile
+// photo of their own yet (enrolled before this column existed), as opposed
+// to who merely has no check-in photo. Excludes card-only employees (the
+// 'C' prefix, same check as isCardOnlyEmployeeNo/nextLocalEmployeeNo below
+// -- they were never enrolled on the face terminal, so there's no device-
+// side face record to ever backfill for them.
+function listEmployeesMissingPicture() {
+  return db.prepare(`
+    SELECT employee_no, name FROM employees
+    WHERE picture_path IS NULL AND employee_no NOT LIKE 'C%'
+  `).all();
+}
+
 function setEmployeeWage(employeeNo, dailyWage) {
   db.prepare('UPDATE employees SET daily_wage = ?, updated_at = ? WHERE employee_no = ?')
     .run(dailyWage ?? null, new Date().toISOString(), String(employeeNo));
@@ -691,7 +705,7 @@ module.exports = {
   db, upsertEmployee, employeeName, insertCheckin, listCheckins, stats, clearCheckins, DB_PATH,
   setCheckinPicture, getCheckinById, isSameSession, periodOf, getCheckoutAfter, getCardExitReaderNo, getPollIntervalMs,
   insertPendingWorker, listPendingWorkers, getPendingWorker, deletePendingWorker,
-  listEmployees, setEmployeeWage, setEmployeePicture, deleteEmployeeLocal, getSetting, setSetting, payroll,
+  listEmployees, setEmployeeWage, setEmployeePicture, listEmployeesMissingPicture, deleteEmployeeLocal, getSetting, setSetting, payroll,
   setEmployeeCard, employeeByCard, isCardOnlyEmployeeNo, nextLocalEmployeeNo,
   insertPendingCard, listPendingCards, getPendingCard, setPendingCardNo, findArmedPendingCard, deletePendingCard,
   countUsers, createUser, getUserByUsername, getUserById, listUsers, updateUserPermissions, updateUserPassword, deleteUser,

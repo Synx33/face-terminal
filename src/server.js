@@ -765,6 +765,34 @@ app.get('/api/employees', auth.requirePermission('can_view'), (req, res) => {
   res.json(db.listEmployees());
 });
 
+// One-time backfill for employees enrolled before employees.picture_path
+// existed (see db.js's migration comment and deviceClient.js's
+// fetchEnrolledFacePhoto for why a dedicated profile photo matters) --
+// pulls each one's already-stored face record back from the device's own
+// face picture library instead of leaving them with whatever their latest
+// check-in's best-effort live snapshot happened to look like. Sequential,
+// not parallel -- these are real requests against the same device the
+// live poller is also hitting, and this is an occasional admin action, not
+// something that needs to be fast.
+app.post('/api/employees/backfill-photos', auth.requireAdmin, async (req, res) => {
+  if (rejectIfAuthBackedOff(res)) return;
+  const candidates = db.listEmployeesMissingPicture();
+  const updated = [];
+  const failed = [];
+  for (const emp of candidates) {
+    try {
+      const jpeg = await deviceClient.fetchEnrolledFacePhoto(emp.employee_no);
+      const picturePath = saveSnapshot(jpeg, { employeeNo: emp.employee_no, serialNo: 'backfill' });
+      db.setEmployeePicture(emp.employee_no, picturePath);
+      updated.push({ employeeNo: emp.employee_no, name: emp.name });
+    } catch (err) {
+      failed.push({ employeeNo: emp.employee_no, name: emp.name, error: err.message });
+    }
+  }
+  logger.log(`[enroll] photo backfill: ${updated.length} updated, ${failed.length} failed (of ${candidates.length} candidates)`);
+  res.json({ updated, failed });
+});
+
 app.put('/api/employees/:employeeNo', auth.requirePermission('can_edit'), async (req, res) => {
   const { employeeNo } = req.params;
   const { name, dailyWage } = req.body || {};

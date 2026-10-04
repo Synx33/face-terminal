@@ -95,6 +95,45 @@ async function fetchSnapshot() {
   return res.buffer;
 }
 
+// NOT yet confirmed live against a real device, unlike everything else in
+// this file -- sourced directly from Hikvision's own "Device Network SDK
+// (Person-Based Access Control) Developer Guide" (already present on this
+// box at /opt/hiksdk/.../doc/), which documents this exact ISAPI endpoint's
+// JSON request/response shape (E.187 FDSearch -> JSON_SearchFaceRecordResult),
+// not guessed from general API conventions. faceLibType/FDID match exactly
+// what uploadFace() below already writes new faces into, since this reads
+// from that same library. Per the docs, a matched record's "faceURL" field
+// (when present) is a second URL to fetch the actual JPEG from -- this
+// follows that second hop the same way fetchSnapshot() above does its own
+// single-hop fetch. Needs a real device to confirm the response actually
+// looks like the docs say before trusting this in production.
+async function fetchEnrolledFacePhoto(employeeNo) {
+  const doc = await isapi('POST', '/ISAPI/Intelligent/FDLib/FDSearch?format=json', {
+    searchResultPosition: 0,
+    maxResults: 1,
+    faceLibType: 'blackFD',
+    FDID: '1',
+    FPID: String(employeeNo),
+  });
+  const match = doc.MatchList?.[0];
+  if (!match) throw new Error(`no face record found on the device for employeeNo ${employeeNo}`);
+  if (!match.faceURL) throw new Error(`device has a face record for employeeNo ${employeeNo} but didn't return a faceURL to fetch the picture from`);
+
+  const res = await digestRequest({
+    method: 'GET',
+    url: match.faceURL.startsWith('http') ? match.faceURL : `${baseUrl()}${match.faceURL}`,
+    username: process.env.DEVICE_USER,
+    password: process.env.DEVICE_PASS,
+  });
+  if (res.status === 401) {
+    authState.recordAuthFailure();
+    throw new DeviceAuthError(`fetchEnrolledFacePhoto -> HTTP 401 fetching faceURL for employeeNo ${employeeNo}`);
+  }
+  if (res.status !== 200) throw new Error(`fetchEnrolledFacePhoto -> HTTP ${res.status} fetching faceURL for employeeNo ${employeeNo}`);
+  authState.recordAuthSuccess();
+  return res.buffer;
+}
+
 /** Next free numeric employeeNo — one past the current highest, so new hires never collide. */
 async function nextEmployeeNo() {
   const users = await fetchAllUsers();
@@ -179,6 +218,6 @@ async function deleteDeviceUser(employeeNo) {
 }
 
 module.exports = {
-  fetchAllUsers, fetchEvents, fetchSnapshot, nextEmployeeNo, createDeviceUser, modifyDeviceUser, uploadFace, deleteDeviceUser,
+  fetchAllUsers, fetchEvents, fetchSnapshot, fetchEnrolledFacePhoto, nextEmployeeNo, createDeviceUser, modifyDeviceUser, uploadFace, deleteDeviceUser,
   DeviceAuthError,
 };
