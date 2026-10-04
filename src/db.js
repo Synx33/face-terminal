@@ -172,6 +172,23 @@ if (!existingEmployeeCols.includes('card_no')) {
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_employees_card_no ON employees(card_no) WHERE card_no IS NOT NULL');
 }
 
+// The employee's own stable profile photo -- the one deliberately captured
+// and reviewed at enrollment time. Exists because listEmployees() used to
+// show a worker's MOST RECENT CHECK-IN photo instead of a dedicated one, and
+// that check-in photo is a best-effort LIVE snapshot grabbed asynchronously
+// after the event fires (see server.js's capturePhoto()) -- fine most of
+// the time, but confirmed live: enrolling someone often triggers a real
+// check-in event moments later as the device recognizes the face it was
+// just given, and by the time that async snapshot actually executes the
+// person has often already stepped back from the terminal, silently
+// replacing the clean enrollment photo the operator just took and reviewed
+// with an empty-frame shot. NULL for employees enrolled before this existed
+// (listEmployees() falls back to their latest check-in photo for those,
+// same as before) and for card-only employees (no face capture at all).
+if (!existingEmployeeCols.includes('picture_path')) {
+  db.exec('ALTER TABLE employees ADD COLUMN picture_path TEXT');
+}
+
 // can_export was added after some sites already had real accounts created --
 // same ALTER-if-missing pattern as card_no above. Defaults to 0 (off) for
 // existing accounts on upgrade -- an admin explicitly turns it on per
@@ -213,15 +230,28 @@ function employeeName(employeeNo) {
   return row ? row.name : null;
 }
 
+// The employee's own picture_path (set once at enrollment, see
+// setEmployeePicture below) always wins when present -- a deliberate,
+// reviewed photo should never get silently swapped out by a later, best-
+// effort live check-in snapshot. Falls back to the latest check-in photo
+// only for the employees enrolled before this column existed, who have
+// nothing else to show.
 function listEmployees() {
   return db.prepare(`
     SELECT e.employee_no, e.name, e.daily_wage, e.updated_at, e.card_no,
-      (SELECT c.picture_path FROM checkins c
-       WHERE c.employee_no = e.employee_no AND c.picture_path IS NOT NULL
-       ORDER BY c.event_time DESC LIMIT 1) AS picture_path
+      COALESCE(
+        e.picture_path,
+        (SELECT c.picture_path FROM checkins c
+         WHERE c.employee_no = e.employee_no AND c.picture_path IS NOT NULL
+         ORDER BY c.event_time DESC LIMIT 1)
+      ) AS picture_path
     FROM employees e
     ORDER BY e.name COLLATE NOCASE ASC
   `).all();
+}
+
+function setEmployeePicture(employeeNo, picturePath) {
+  db.prepare('UPDATE employees SET picture_path = ? WHERE employee_no = ?').run(picturePath, String(employeeNo));
 }
 
 function setEmployeeWage(employeeNo, dailyWage) {
@@ -661,7 +691,7 @@ module.exports = {
   db, upsertEmployee, employeeName, insertCheckin, listCheckins, stats, clearCheckins, DB_PATH,
   setCheckinPicture, getCheckinById, isSameSession, periodOf, getCheckoutAfter, getCardExitReaderNo, getPollIntervalMs,
   insertPendingWorker, listPendingWorkers, getPendingWorker, deletePendingWorker,
-  listEmployees, setEmployeeWage, deleteEmployeeLocal, getSetting, setSetting, payroll,
+  listEmployees, setEmployeeWage, setEmployeePicture, deleteEmployeeLocal, getSetting, setSetting, payroll,
   setEmployeeCard, employeeByCard, isCardOnlyEmployeeNo, nextLocalEmployeeNo,
   insertPendingCard, listPendingCards, getPendingCard, setPendingCardNo, findArmedPendingCard, deletePendingCard,
   countUsers, createUser, getUserByUsername, getUserById, listUsers, updateUserPermissions, updateUserPassword, deleteUser,

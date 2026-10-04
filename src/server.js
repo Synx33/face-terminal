@@ -530,11 +530,19 @@ app.post('/api/employees', auth.requirePermission('can_add'), async (req, res) =
   }
   if (rejectIfAuthBackedOff(res)) return;
   try {
+    const jpegBuffer = photoBase64 ? Buffer.from(photoBase64, 'base64') : null;
     const result = await enrollEmployee({
       name: name.trim(),
-      jpegBuffer: photoBase64 ? Buffer.from(photoBase64, 'base64') : null,
+      jpegBuffer,
       dailyWage: dailyWage === undefined || dailyWage === null ? null : Number(dailyWage),
     });
+    // Same permanent-profile-photo treatment as the pending-capture claim
+    // flow above -- a photo supplied directly here is just as deliberate as
+    // one captured through the UI, and should stick the same way.
+    if (jpegBuffer) {
+      const picturePath = saveSnapshot(jpegBuffer, { employeeNo: result.employeeNo, serialNo: 'enroll' });
+      db.setEmployeePicture(result.employeeNo, picturePath);
+    }
     logger.log(`[enroll] added #${result.employeeNo} ${result.name}${result.photoWarning ? ` (photo rejected: ${result.photoWarning})` : ''}`);
     res.json(result);
   } catch (err) {
@@ -582,7 +590,12 @@ app.post('/api/pending-workers/:id/claim', auth.requirePermission('can_add'), as
       dailyWage: dailyWage === undefined || dailyWage === null ? null : Number(dailyWage),
     });
     db.deletePendingWorker(id);
-    deleteSnapshot(pending.picture_path);
+    // The pending capture becomes this employee's permanent profile photo
+    // (see db.js's picture_path migration comment) -- deliberately NOT
+    // deleted here anymore. It still lives under snapshots/pending/, which
+    // is fine; that's just where the file happens to sit, not a claim about
+    // its lifecycle.
+    db.setEmployeePicture(result.employeeNo, pending.picture_path);
     logger.log(`[enroll] claimed pending #${id} as #${result.employeeNo} ${result.name}${result.photoWarning ? ` (photo rejected: ${result.photoWarning})` : ''}`);
     res.json(result);
   } catch (err) {
