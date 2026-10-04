@@ -1228,7 +1228,9 @@ document.getElementById('backupNowBtn').addEventListener('click', async () => {
 
 document.getElementById('backfillPhotosBtn').addEventListener('click', async () => {
   const btn = document.getElementById('backfillPhotosBtn');
+  const resultsEl = document.getElementById('backfillResults');
   btn.disabled = true;
+  resultsEl.hidden = true;
   settingsMsg.className = 'enroll-msg ok';
   settingsMsg.textContent = 'ფოტოები მოწყობილობიდან იტვირთება… ამას შეიძლება ცოტა ხანი დასჭირდეს.';
   try {
@@ -1239,8 +1241,15 @@ document.getElementById('backfillPhotosBtn').addEventListener('click', async () 
       settingsMsg.textContent = 'ყველა თანამშრომელს უკვე აქვს საკუთარი პროფილის ფოტო — არაფერი გასაკეთებელი.';
     } else {
       settingsMsg.className = result.failed.length > 0 ? 'enroll-msg err' : 'enroll-msg ok';
-      settingsMsg.textContent = `წარმატებული: ${result.updated.length}, ვერ მოხერხდა: ${result.failed.length}` +
-        (result.failed.length > 0 ? ` (იხილეთ ლოგი დეტალებისთვის)` : '');
+      settingsMsg.textContent = `წარმატებული: ${result.updated.length}, ვერ მოხერხდა: ${result.failed.length}`;
+      // The actual per-employee reason (e.g. "no face record found", a real
+      // HTTP status, a timeout) -- printed directly here instead of just
+      // telling someone to go check the log, since that's genuinely more
+      // useful for figuring out why this failed on a given device.
+      if (result.failed.length > 0) {
+        resultsEl.hidden = false;
+        resultsEl.textContent = result.failed.map((f) => `#${f.employeeNo} ${f.name}: ${f.error}`).join('\n');
+      }
     }
     loadWorkers();
   } catch (err) {

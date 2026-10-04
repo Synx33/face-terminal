@@ -787,6 +787,7 @@ app.post('/api/employees/backfill-photos', auth.requireAdmin, async (req, res) =
       updated.push({ employeeNo: emp.employee_no, name: emp.name });
     } catch (err) {
       failed.push({ employeeNo: emp.employee_no, name: emp.name, error: err.message });
+      logger.error(`[enroll] photo backfill failed for #${emp.employee_no} ${emp.name}: ${err.message}`);
     }
   }
   logger.log(`[enroll] photo backfill: ${updated.length} updated, ${failed.length} failed (of ${candidates.length} candidates)`);
